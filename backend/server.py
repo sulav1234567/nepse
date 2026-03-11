@@ -76,18 +76,9 @@ def generate_history_for_stock(stock_data: StockData) -> list[HistoricalPrice]:
     return generate_historical_prices(stock_data)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# MARKET ENDPOINTS
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@app.get("/api/market")
-async def get_market_overview():
-    """Get current market overview with NEPSE index and regime."""
-    market_data = await fetch_market_overview()
-    data = market_data.get("data", {})
-    
-    # Create MarketOverview from the data
-    market = MarketOverview(
+async def create_market_overview_from_data(data: dict) -> MarketOverview:
+    """Create MarketOverview model from API response data."""
+    return MarketOverview(
         nepse_index=data.get("nepse_index", data.get("index", 0)),
         nepse_change=data.get("nepse_change", data.get("change", 0)),
         nepse_change_percent=data.get("nepse_change_percent", data.get("change_percent", 0)),
@@ -102,8 +93,39 @@ async def get_market_overview():
         interbank_rate=data.get("interbank_rate", data.get("interbankRate", 0)),
         t_bill_yield=data.get("t_bill_yield", data.get("tBillYield", 0)),
     )
+
+
+async def prepare_stocks_for_analysis(raw_stocks: list[dict]) -> tuple[list[StockData], dict[str, list[HistoricalPrice]]]:
+    """Convert raw stocks to StockData models and generate histories."""
+    stocks = []
+    histories = {}
     
+    for raw_stock in raw_stocks:
+        try:
+            stock = convert_to_stock_data(raw_stock)
+            hist = generate_history_for_stock(stock)
+            stocks.append(stock)
+            histories[stock.symbol] = hist
+        except Exception as e:
+            logger.error(f"Error converting stock: {e}")
+            continue
+    
+    return stocks, histories
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MARKET ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/market")
+async def get_market_overview():
+    """Get current market overview with NEPSE index and regime."""
+    market_data = await fetch_market_overview()
+    data = market_data.get("data", {})
+    
+    market = await create_market_overview_from_data(data)
     regime = detect_regime(market)
+    
     return {
         **market.model_dump(),
         "regime": regime.regime,
@@ -118,22 +140,7 @@ async def get_regime():
     market_data = await fetch_market_overview()
     data = market_data.get("data", {})
     
-    market = MarketOverview(
-        nepse_index=data.get("nepse_index", data.get("index", 0)),
-        nepse_change=data.get("nepse_change", data.get("change", 0)),
-        nepse_change_percent=data.get("nepse_change_percent", data.get("change_percent", 0)),
-        total_turnover=data.get("total_turnover", data.get("turnover", 0)),
-        total_volume=data.get("total_volume", data.get("totalVolume", 0)),
-        total_transactions=data.get("total_transactions", data.get("totalTransactions", 0)),
-        advancers=data.get("advancers", 0),
-        decliners=data.get("decliners", 0),
-        unchanged=data.get("unchanged", 0),
-        regime=data.get("regime", "SIDEWAYS"),
-        regime_confidence=data.get("regime_confidence", 50),
-        interbank_rate=data.get("interbank_rate", data.get("interbankRate", 0)),
-        t_bill_yield=data.get("t_bill_yield", data.get("tBillYield", 0)),
-    )
-    
+    market = await create_market_overview_from_data(data)
     return detect_regime(market)
 
 
@@ -284,19 +291,7 @@ async def get_daily_predictions():
     stocks_data = await fetch_all_stocks()
     raw_stocks = stocks_data.get("stocks", [])
     
-    # Convert to StockData models
-    stocks = []
-    histories = {}
-    for raw_stock in raw_stocks:
-        try:
-            stock = convert_to_stock_data(raw_stock)
-            hist = generate_history_for_stock(stock)
-            stocks.append(stock)
-            histories[stock.symbol] = hist
-        except Exception as e:
-            logger.error(f"Error converting stock: {e}")
-            continue
-    
+    stocks, histories = await prepare_stocks_for_analysis(raw_stocks)
     return generate_daily_predictions(stocks, histories)
 
 
@@ -306,19 +301,7 @@ async def get_weekly_predictions():
     stocks_data = await fetch_all_stocks()
     raw_stocks = stocks_data.get("stocks", [])
     
-    # Convert to StockData models
-    stocks = []
-    histories = {}
-    for raw_stock in raw_stocks:
-        try:
-            stock = convert_to_stock_data(raw_stock)
-            hist = generate_history_for_stock(stock)
-            stocks.append(stock)
-            histories[stock.symbol] = hist
-        except Exception as e:
-            logger.error(f"Error converting stock: {e}")
-            continue
-    
+    stocks, histories = await prepare_stocks_for_analysis(raw_stocks)
     return generate_weekly_predictions(stocks, histories)
 
 
@@ -328,19 +311,7 @@ async def get_monthly_predictions():
     stocks_data = await fetch_all_stocks()
     raw_stocks = stocks_data.get("stocks", [])
     
-    # Convert to StockData models
-    stocks = []
-    histories = {}
-    for raw_stock in raw_stocks:
-        try:
-            stock = convert_to_stock_data(raw_stock)
-            hist = generate_history_for_stock(stock)
-            stocks.append(stock)
-            histories[stock.symbol] = hist
-        except Exception as e:
-            logger.error(f"Error converting stock: {e}")
-            continue
-    
+    stocks, histories = await prepare_stocks_for_analysis(raw_stocks)
     return generate_monthly_predictions(stocks, histories)
 
 
@@ -354,44 +325,25 @@ async def get_portfolio_optimization():
     stocks_data = await fetch_all_stocks()
     raw_stocks = stocks_data.get("stocks", [])
     
-    # Convert to StockData models
-    stocks = []
-    histories = {}
+    # Prepare stocks and histories
+    stocks, histories = await prepare_stocks_for_analysis(raw_stocks)
+    
+    # Calculate FCS scores
     weights = LayerWeights()
     fcs_scores = {}
-    
-    for raw_stock in raw_stocks:
+    for stock in stocks:
         try:
-            stock = convert_to_stock_data(raw_stock)
-            hist = generate_history_for_stock(stock)
-            stocks.append(stock)
-            histories[stock.symbol] = hist
-            
-            # Calculate FCS score
+            hist = histories.get(stock.symbol, [])
             analysis = analyze_stock(stock, hist, weights)
             fcs_scores[stock.symbol] = analysis.fcs.score
         except Exception as e:
-            logger.error(f"Error processing stock for portfolio: {e}")
+            logger.error(f"Error calculating FCS for {stock.symbol}: {e}")
             continue
     
     # Get market regime
     market_data = await fetch_market_overview()
     data = market_data.get("data", {})
-    market = MarketOverview(
-        nepse_index=data.get("nepse_index", data.get("index", 0)),
-        nepse_change=data.get("nepse_change", data.get("change", 0)),
-        nepse_change_percent=data.get("nepse_change_percent", data.get("change_percent", 0)),
-        total_turnover=data.get("total_turnover", data.get("turnover", 0)),
-        total_volume=data.get("total_volume", data.get("totalVolume", 0)),
-        total_transactions=data.get("total_transactions", data.get("totalTransactions", 0)),
-        advancers=data.get("advancers", 0),
-        decliners=data.get("decliners", 0),
-        unchanged=data.get("unchanged", 0),
-        regime=data.get("regime", "SIDEWAYS"),
-        regime_confidence=data.get("regime_confidence", 50),
-        interbank_rate=data.get("interbank_rate", data.get("interbankRate", 0)),
-        t_bill_yield=data.get("t_bill_yield", data.get("tBillYield", 0)),
-    )
+    market = await create_market_overview_from_data(data)
     regime = detect_regime(market)
     
     return optimize_portfolio(
