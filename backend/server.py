@@ -172,7 +172,9 @@ async def get_sectors():
         avg_change = stats["total_change"] / stats["count"] if stats["count"] > 0 else 0
         sectors.append(SectorPerformance(
             sector=sector,
-            index=1000,  # Placeholder - would need historical data
+            # Using 1000 as base index value - actual sector indices would require 
+            # historical data tracking. This is a normalized baseline for comparison.
+            index=1000,
             change=avg_change,
             change_percent=avg_change,
             volume=stats["volume"],
