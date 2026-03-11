@@ -94,7 +94,20 @@ export async function fetchLiveMarket(): Promise<MarketOverviewResponse> {
     // Return demo market as fallback
     const { DEMO_MARKET_OVERVIEW } = await import('./demo-data');
     return {
-      ...DEMO_MARKET_OVERVIEW,
+      nepseIndex: DEMO_MARKET_OVERVIEW.nepseIndex,
+      change: DEMO_MARKET_OVERVIEW.nepseChange,
+      changePercent: DEMO_MARKET_OVERVIEW.nepseChangePercent,
+      totalTurnover: DEMO_MARKET_OVERVIEW.totalTurnover,
+      totalVolume: DEMO_MARKET_OVERVIEW.totalVolume,
+      advances: DEMO_MARKET_OVERVIEW.advancers,
+      declines: DEMO_MARKET_OVERVIEW.decliners,
+      unchanged: DEMO_MARKET_OVERVIEW.unchanged,
+      moneyRates: {
+        interbank: DEMO_MARKET_OVERVIEW.interbankRate,
+        t91: DEMO_MARKET_OVERVIEW.tBillYield,
+        t182: DEMO_MARKET_OVERVIEW.tBillYield * 1.1,
+        t364: DEMO_MARKET_OVERVIEW.tBillYield * 1.2,
+      },
       source: 'DEMO',
       timestamp: new Date().toISOString(),
     };
