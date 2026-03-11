@@ -114,7 +114,7 @@ class NepseClient:
             return cached
 
         try:
-            async with httpx.AsyncClient(verify=False) as client:
+            async with httpx.AsyncClient() as client:
                 headers = await self._get_headers(client)
                 # Try paginated endpoint
                 resp = await client.get(
@@ -142,7 +142,7 @@ class NepseClient:
             return cached
 
         try:
-            async with httpx.AsyncClient(verify=False) as client:
+            async with httpx.AsyncClient() as client:
                 headers = await self._get_headers(client)
                 resp = await client.get(
                     f"{NEPSE_BASE}/market-open",
@@ -164,7 +164,7 @@ class NepseClient:
             return cached
 
         try:
-            async with httpx.AsyncClient(verify=False) as client:
+            async with httpx.AsyncClient() as client:
                 headers = await self._get_headers(client)
                 resp = await client.get(
                     f"{NEPSE_BASE}/nepse-data/sub-index",
@@ -294,31 +294,31 @@ async def fetch_all_stocks() -> Dict[str, Any]:
             }
 
     # Fallback: Demo data
-    from demo_data import DEMO_STOCKS
+    from .demo_data import DEMO_STOCKS
     demo_stocks = []
     for s in DEMO_STOCKS:
         demo_stocks.append({
-            "symbol": s["symbol"] if isinstance(s, dict) else s.symbol,
-            "name": s["name"] if isinstance(s, dict) else s.name,
-            "sector": s["sector"] if isinstance(s, dict) else s.sector,
-            "cmp": s["cmp"] if isinstance(s, dict) else s.cmp,
-            "previousClose": s["previousClose"] if isinstance(s, dict) else s.previousClose,
-            "change": s["change"] if isinstance(s, dict) else s.change,
-            "changePercent": s["changePercent"] if isinstance(s, dict) else s.changePercent,
-            "volume": s["volume"] if isinstance(s, dict) else s.volume,
-            "avgVolume20d": s["avgVolume20d"] if isinstance(s, dict) else s.avgVolume20d,
-            "high52w": s["high52w"] if isinstance(s, dict) else s.high52w,
-            "low52w": s["low52w"] if isinstance(s, dict) else s.low52w,
-            "eps": s["eps"] if isinstance(s, dict) else s.eps,
-            "pe": s["pe"] if isinstance(s, dict) else s.pe,
-            "pb": s["pb"] if isinstance(s, dict) else s.pb,
-            "roe": s["roe"] if isinstance(s, dict) else s.roe,
-            "dividendYield": s["dividendYield"] if isinstance(s, dict) else s.dividendYield,
-            "bookValue": s["bookValue"] if isinstance(s, dict) else s.bookValue,
-            "marketCap": s["marketCap"] if isinstance(s, dict) else s.marketCap,
-            "open": s["cmp"] if isinstance(s, dict) else s.cmp,
-            "high": s["cmp"] if isinstance(s, dict) else s.cmp,
-            "low": s["cmp"] if isinstance(s, dict) else s.cmp,
+            "symbol": s.symbol,
+            "name": s.name,
+            "sector": s.sector,
+            "cmp": s.cmp,
+            "previousClose": s.previous_close,
+            "change": s.change,
+            "changePercent": s.change_percent,
+            "volume": s.volume,
+            "avgVolume20d": s.avg_volume_20d,
+            "high52w": s.high_52w,
+            "low52w": s.low_52w,
+            "eps": s.eps,
+            "pe": s.pe,
+            "pb": s.pb,
+            "roe": s.roe,
+            "dividendYield": s.dividend_yield,
+            "bookValue": s.book_value,
+            "marketCap": s.market_cap,
+            "open": s.cmp,
+            "high": s.cmp,
+            "low": s.cmp,
             "totalTrades": 0,
             "turnover": 0,
         })
@@ -340,9 +340,9 @@ async def fetch_market_overview() -> Dict[str, Any]:
             "timestamp": datetime.now().isoformat(),
         }
 
-    from demo_data import get_market_overview
+    from .demo_data import DEMO_MARKET
     return {
         "source": "DEMO",
-        "data": get_market_overview(),
+        "data": DEMO_MARKET.model_dump(),
         "timestamp": datetime.now().isoformat(),
     }
