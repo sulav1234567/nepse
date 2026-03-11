@@ -43,6 +43,8 @@ next-env.d.ts
 # application logs
 backend.log
 frontend.log
+.deps_installed
+backend/.deps_installed
 
 # python
 __pycache__/

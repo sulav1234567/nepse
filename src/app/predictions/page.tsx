@@ -46,9 +46,14 @@ export default function PredictionsPage() {
   const [predictions, setPredictions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [dataSource, setDataSource] = useState<'LIVE' | 'DEMO'>('DEMO');
+  const [isLoadingData, setIsLoadingData] = useState(false);
 
   useEffect(() => {
     async function loadData() {
+      // Prevent concurrent fetches
+      if (isLoadingData) return;
+      
+      setIsLoadingData(true);
       setLoading(true);
       const stocksData = await fetchLiveStocks();
       setDataSource(stocksData.source);
@@ -83,10 +88,11 @@ export default function PredictionsPage() {
       const limit = tab === 'daily' ? 5 : tab === 'weekly' ? 10 : 5;
       setPredictions(results.filter(r => r.fcs >= 45).slice(0, limit));
       setLoading(false);
+      setIsLoadingData(false);
     }
     
     loadData();
-  }, [tab]);
+  }, [tab, isLoadingData]); // Note: Includes isLoadingData to prevent race conditions
 
   const tierLabel = tab === 'daily' ? 'Top 5 Daily Trades (1-5 Sessions)' : tab === 'weekly' ? 'Top 10 Weekly Positions (5-15 Sessions)' : 'Top 5 Monthly Conviction Picks (15-60 Sessions)';
 

@@ -66,6 +66,9 @@ export default function ScreenerPage() {
     }
     
     loadData();
+    
+    // Note: Data is fetched once on mount. To refresh, user can reload the page.
+    // Future enhancement: Add a refresh button or auto-refresh timer
   }, []);
 
   const filtered = useMemo(() => {

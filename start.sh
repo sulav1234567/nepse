@@ -23,19 +23,19 @@ echo "✅ Prerequisites check passed"
 echo ""
 
 # Install backend dependencies if needed
-if [ ! -d "backend/__pycache__" ]; then
+if [ ! -f "backend/.deps_installed" ]; then
     echo "📦 Installing backend dependencies..."
     cd backend
-    pip install -r requirements.txt
+    pip install -r requirements.txt && touch .deps_installed
     cd ..
     echo "✅ Backend dependencies installed"
     echo ""
 fi
 
 # Install frontend dependencies if needed
-if [ ! -d "node_modules" ]; then
+if [ ! -f ".deps_installed" ]; then
     echo "📦 Installing frontend dependencies..."
-    npm install
+    npm ci && touch .deps_installed
     echo "✅ Frontend dependencies installed"
     echo ""
 fi
