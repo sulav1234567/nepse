@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import Sidebar from '@/components/Sidebar';
-import { DEMO_STOCKS, generateHistoricalPrices } from '@/lib/demo-data';
+import { generateHistoricalPrices } from '@/lib/demo-data';
+import { fetchLiveStocks } from '@/lib/api-client';
 import { computeFCS, computePriceTargets, computeTechnicalIndicators, analyzeStock } from '@/lib/analysis-engine';
 import { LayerWeights, Stock } from '@/lib/types';
 
@@ -44,38 +45,47 @@ export default function PredictionsPage() {
   const [tab, setTab] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [predictions, setPredictions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dataSource, setDataSource] = useState<'LIVE' | 'DEMO'>('DEMO');
 
   useEffect(() => {
-    const weights = tab === 'daily' ? DAILY_WEIGHTS : tab === 'weekly' ? WEEKLY_WEIGHTS : MONTHLY_WEIGHTS;
-    const results = DEMO_STOCKS.map(stock => {
-      const history = generateHistoricalPrices(stock);
-      const analysis = analyzeStock(stock, history, weights);
-      const fcs = analysis.fcs;
-      const targets = analysis.priceTargets;
-      const signalType = tab === 'daily'
-        ? classifyDailySignal(stock, analysis)
-        : tab === 'weekly'
-        ? classifyWeeklySignal(stock, analysis)
-        : classifyMonthlySignal(stock, fcs);
+    async function loadData() {
+      setLoading(true);
+      const stocksData = await fetchLiveStocks();
+      setDataSource(stocksData.source);
+      
+      const weights = tab === 'daily' ? DAILY_WEIGHTS : tab === 'weekly' ? WEEKLY_WEIGHTS : MONTHLY_WEIGHTS;
+      const results = stocksData.stocks.map(stock => {
+        const history = generateHistoricalPrices(stock);
+        const analysis = analyzeStock(stock, history, weights);
+        const fcs = analysis.fcs;
+        const targets = analysis.priceTargets;
+        const signalType = tab === 'daily'
+          ? classifyDailySignal(stock, analysis)
+          : tab === 'weekly'
+          ? classifyWeeklySignal(stock, analysis)
+          : classifyMonthlySignal(stock, fcs);
 
-      return {
-        stock,
-        fcs: fcs.score,
-        signal: fcs.signal,
-        signalType,
-        targets,
-        fvl: fcs.layerScores.fvl,
-        tml: fcs.layerScores.tml,
-        ssil: fcs.layerScores.ssil,
-        gtbil: fcs.layerScores.gtbil,
-        mrlll: fcs.layerScores.mrlll,
-        verdict: analysis.retailInstitutionalVerdict,
-      };
-    });
-    results.sort((a, b) => b.fcs - a.fcs);
-    const limit = tab === 'daily' ? 5 : tab === 'weekly' ? 10 : 5;
-    setPredictions(results.filter(r => r.fcs >= 45).slice(0, limit));
-    setLoading(false);
+        return {
+          stock,
+          fcs: fcs.score,
+          signal: fcs.signal,
+          signalType,
+          targets,
+          fvl: fcs.layerScores.fvl,
+          tml: fcs.layerScores.tml,
+          ssil: fcs.layerScores.ssil,
+          gtbil: fcs.layerScores.gtbil,
+          mrlll: fcs.layerScores.mrlll,
+          verdict: analysis.retailInstitutionalVerdict,
+        };
+      });
+      results.sort((a, b) => b.fcs - a.fcs);
+      const limit = tab === 'daily' ? 5 : tab === 'weekly' ? 10 : 5;
+      setPredictions(results.filter(r => r.fcs >= 45).slice(0, limit));
+      setLoading(false);
+    }
+    
+    loadData();
   }, [tab]);
 
   const tierLabel = tab === 'daily' ? 'Top 5 Daily Trades (1-5 Sessions)' : tab === 'weekly' ? 'Top 10 Weekly Positions (5-15 Sessions)' : 'Top 5 Monthly Conviction Picks (15-60 Sessions)';
@@ -87,7 +97,7 @@ export default function PredictionsPage() {
         <div className="page-header">
           <h2>Predictions</h2>
           <div className="subtitle">Three-tier prediction engine · Daily | Weekly | Monthly</div>
-          <div className="data-badge demo"><span className="pulse"></span>DEMO DATA · Engine: numpy, scipy, filterpy, scikit-learn</div>
+          <div className={`data-badge ${dataSource === 'LIVE' ? 'live' : 'demo'}`}><span className="pulse"></span>{dataSource === 'LIVE' ? 'LIVE DATA' : 'DEMO DATA'} · Engine: numpy, scipy, filterpy, scikit-learn</div>
         </div>
 
         <div className="tabs">

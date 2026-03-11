@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import Sidebar from '@/components/Sidebar';
-import { DEMO_STOCKS, generateHistoricalPrices } from '@/lib/demo-data';
+import { generateHistoricalPrices } from '@/lib/demo-data';
+import { fetchLiveStocks } from '@/lib/api-client';
 import { analyzeStock, computeTechnicalIndicators, FullAnalysis } from '@/lib/analysis-engine';
-import { LayerWeights } from '@/lib/types';
+import { LayerWeights, Stock } from '@/lib/types';
 import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import {
@@ -21,30 +22,48 @@ function getSignalClass(signal: string): string {
 
 function AnalysisContent() {
   const searchParams = useSearchParams();
-  const symbol = searchParams.get('symbol') || DEMO_STOCKS[0].symbol;
+  const [stocks, setStocks] = useState<Stock[]>([]);
+  const [dataSource, setDataSource] = useState<'LIVE' | 'DEMO'>('DEMO');
+  const symbolParam = searchParams.get('symbol');
+  const [symbol, setSymbol] = useState<string>('');
   const [analysis, setAnalysis] = useState<FullAnalysis | null>(null);
   const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const stock = DEMO_STOCKS.find(s => s.symbol === symbol) || DEMO_STOCKS[0];
-    const hist = generateHistoricalPrices(stock);
-    const result = analyzeStock(stock, hist, DEFAULT_WEIGHTS);
-    setAnalysis(result);
-    const indicators = computeTechnicalIndicators(hist, stock);
-    // Build chart data
-    const chartData = hist.map((h, i) => ({
-      date: h.date.substring(5),
-      close: h.close,
-      volume: h.volume,
-      ema9: i >= 8 ? hist.slice(0, i + 1).reduce((acc, v, j) => {
-        const k = 2 / 10;
-        return j === 0 ? v.close : v.close * k + acc * (1 - k);
-      }, 0) : null,
-    }));
-    setHistory(chartData);
-    setLoading(false);
-  }, [symbol]);
+    async function loadData() {
+      setLoading(true);
+      const stocksData = await fetchLiveStocks();
+      setStocks(stocksData.stocks);
+      setDataSource(stocksData.source);
+      
+      // Use the symbol from URL or default to first stock
+      const targetSymbol = symbolParam || stocksData.stocks[0]?.symbol || '';
+      setSymbol(targetSymbol);
+      
+      const stock = stocksData.stocks.find(s => s.symbol === targetSymbol) || stocksData.stocks[0];
+      if (stock) {
+        const hist = generateHistoricalPrices(stock);
+        const result = analyzeStock(stock, hist, DEFAULT_WEIGHTS);
+        setAnalysis(result);
+        const indicators = computeTechnicalIndicators(hist, stock);
+        // Build chart data
+        const chartData = hist.map((h, i) => ({
+          date: h.date.substring(5),
+          close: h.close,
+          volume: h.volume,
+          ema9: i >= 8 ? hist.slice(0, i + 1).reduce((acc, v, j) => {
+            const k = 2 / 10;
+            return j === 0 ? v.close : v.close * k + acc * (1 - k);
+          }, 0) : null,
+        }));
+        setHistory(chartData);
+      }
+      setLoading(false);
+    }
+    
+    loadData();
+  }, [symbolParam]);
 
   if (loading || !analysis) {
     return <div style={{ padding: 40 }}><div className="loading-skeleton" style={{ height: 400, borderRadius: 16 }} /></div>;
@@ -67,7 +86,7 @@ function AnalysisContent() {
           <span className={`signal-badge ${getSignalClass(a.fcs.signal)}`} style={{ fontSize: '0.8rem' }}>{a.fcs.signal}</span>
         </div>
         <div className="subtitle">{a.stock.name} · {a.stock.sector}</div>
-        <div className="data-badge demo"><span className="pulse"></span>DEMO · Full Five-Layer Report</div>
+        <div className={`data-badge ${dataSource === 'LIVE' ? 'live' : 'demo'}`}><span className="pulse"></span>{dataSource === 'LIVE' ? 'LIVE' : 'DEMO'} · Full Five-Layer Report</div>
       </div>
 
       {/* Price Stats Bar */}
