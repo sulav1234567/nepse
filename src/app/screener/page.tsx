@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import Sidebar from '@/components/Sidebar';
-import { DEMO_STOCKS, generateHistoricalPrices } from '@/lib/demo-data';
+import { generateHistoricalPrices } from '@/lib/demo-data';
+import { fetchLiveStocks } from '@/lib/api-client';
 import { computeFCS } from '@/lib/analysis-engine';
 import { LayerWeights, Stock, Sector } from '@/lib/types';
 import Link from 'next/link';
@@ -35,27 +36,39 @@ interface StockRow {
 export default function ScreenerPage() {
   const [rows, setRows] = useState<StockRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dataSource, setDataSource] = useState<'LIVE' | 'DEMO'>('DEMO');
   const [sector, setSector] = useState<Sector | 'All'>('All');
   const [sortKey, setSortKey] = useState<string>('fcs');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   useEffect(() => {
-    const results: StockRow[] = DEMO_STOCKS.map(stock => {
-      const history = generateHistoricalPrices(stock);
-      const fcs = computeFCS(stock, history, DEFAULT_WEIGHTS);
-      return {
-        stock,
-        fcs: fcs.score,
-        signal: fcs.signal,
-        fvl: fcs.layerScores.fvl,
-        tml: fcs.layerScores.tml,
-        ssil: fcs.layerScores.ssil,
-        gtbil: fcs.layerScores.gtbil,
-        mrlll: fcs.layerScores.mrlll,
-      };
-    });
-    setRows(results);
-    setLoading(false);
+    async function loadData() {
+      setLoading(true);
+      const stocksData = await fetchLiveStocks();
+      setDataSource(stocksData.source);
+      
+      const results: StockRow[] = stocksData.stocks.map(stock => {
+        const history = generateHistoricalPrices(stock);
+        const fcs = computeFCS(stock, history, DEFAULT_WEIGHTS);
+        return {
+          stock,
+          fcs: fcs.score,
+          signal: fcs.signal,
+          fvl: fcs.layerScores.fvl,
+          tml: fcs.layerScores.tml,
+          ssil: fcs.layerScores.ssil,
+          gtbil: fcs.layerScores.gtbil,
+          mrlll: fcs.layerScores.mrlll,
+        };
+      });
+      setRows(results);
+      setLoading(false);
+    }
+    
+    loadData();
+    
+    // Note: Data is fetched once on mount. To refresh, user can reload the page.
+    // Future enhancement: Add a refresh button or auto-refresh timer
   }, []);
 
   const filtered = useMemo(() => {
@@ -86,9 +99,9 @@ export default function ScreenerPage() {
         <div className="page-header">
           <h2>Stock Screener</h2>
           <div className="subtitle">Five-layer analysis scores for all NEPSE stocks</div>
-          <div className="data-badge demo">
+          <div className={`data-badge ${dataSource === 'LIVE' ? 'live' : 'demo'}`}>
             <span className="pulse"></span>
-            DEMO DATA · {DEMO_STOCKS.length} stocks loaded
+            {dataSource === 'LIVE' ? 'LIVE DATA' : 'DEMO DATA'} · {rows.length} stocks loaded
           </div>
         </div>
 
