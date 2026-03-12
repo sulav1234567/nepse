@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import Sidebar from '@/components/Sidebar';
-import { DEMO_STOCKS, generateHistoricalPrices } from '@/lib/demo-data';
-import { computeFCS, analyzeStock } from '@/lib/analysis-engine';
-import { LayerWeights, Stock } from '@/lib/types';
+import { generateHistoricalPrices } from '@/lib/demo-data';
+import { fetchLiveStocks } from '@/lib/api-client';
+import { computeFCS } from '@/lib/analysis-engine';
+import { LayerWeights } from '@/lib/types';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
 const DEFAULT_WEIGHTS: LayerWeights = { fvl: 0.25, tml: 0.25, ssil: 0.15, gtbil: 0.25, mrlll: 0.10 };
@@ -15,38 +16,47 @@ export default function PortfolioPage() {
   const [allocations, setAllocations] = useState<{ symbol: string; name: string; weight: number; fcs: number; signal: string }[]>([]);
   const [metrics, setMetrics] = useState({ expectedReturn: 0, volatility: 0, sortino: 0, sharpe: 0 });
   const [loading, setLoading] = useState(true);
+  const [dataSource, setDataSource] = useState<'LIVE' | 'DEMO'>('DEMO');
 
   useEffect(() => {
-    const fcsScores: Record<string, number> = {};
-    DEMO_STOCKS.forEach(stock => {
-      const hist = generateHistoricalPrices(stock);
-      const fcs = computeFCS(stock, hist, DEFAULT_WEIGHTS);
-      fcsScores[stock.symbol] = fcs.score;
-    });
+    async function loadData() {
+      setLoading(true);
+      const stocksData = await fetchLiveStocks();
+      setDataSource(stocksData.source);
+      
+      const fcsScores: Record<string, number> = {};
+      stocksData.stocks.forEach(stock => {
+        const hist = generateHistoricalPrices(stock);
+        const fcs = computeFCS(stock, hist, DEFAULT_WEIGHTS);
+        fcsScores[stock.symbol] = fcs.score;
+      });
 
-    // FCS-weighted allocation (simulating PyPortfolioOpt output)
-    const eligible = DEMO_STOCKS.filter(s => (fcsScores[s.symbol] || 0) > 40);
-    const totalFCS = eligible.reduce((sum, s) => sum + Math.max(0, (fcsScores[s.symbol] || 0) - 30), 0);
+      // FCS-weighted allocation (simulating PyPortfolioOpt output)
+      const eligible = stocksData.stocks.filter(s => (fcsScores[s.symbol] || 0) > 40);
+      const totalFCS = eligible.reduce((sum, s) => sum + Math.max(0, (fcsScores[s.symbol] || 0) - 30), 0);
 
-    const allocs = eligible.map(s => {
-      const rawWeight = Math.max(0, (fcsScores[s.symbol] || 0) - 30);
-      return {
-        symbol: s.symbol,
-        name: s.name,
-        weight: Math.round((rawWeight / totalFCS) * 1000) / 10,
-        fcs: fcsScores[s.symbol] || 0,
-        signal: fcsScores[s.symbol] >= 85 ? 'STRONG BUY' : fcsScores[s.symbol] >= 70 ? 'BUY' : fcsScores[s.symbol] >= 55 ? 'SPECULATIVE BUY' : 'HOLD',
-      };
-    }).sort((a, b) => b.weight - a.weight);
+      const allocs = eligible.map(s => {
+        const rawWeight = Math.max(0, (fcsScores[s.symbol] || 0) - 30);
+        return {
+          symbol: s.symbol,
+          name: s.name,
+          weight: Math.round((rawWeight / totalFCS) * 1000) / 10,
+          fcs: fcsScores[s.symbol] || 0,
+          signal: fcsScores[s.symbol] >= 85 ? 'STRONG BUY' : fcsScores[s.symbol] >= 70 ? 'BUY' : fcsScores[s.symbol] >= 55 ? 'SPECULATIVE BUY' : 'HOLD',
+        };
+      }).sort((a, b) => b.weight - a.weight);
 
-    setAllocations(allocs);
-    setMetrics({
-      expectedReturn: 18.5 + Math.random() * 8,
-      volatility: 12.2 + Math.random() * 5,
-      sortino: 1.2 + Math.random() * 0.8,
-      sharpe: 0.9 + Math.random() * 0.6,
-    });
-    setLoading(false);
+      setAllocations(allocs);
+      setMetrics({
+        expectedReturn: 18.5 + Math.random() * 8,
+        volatility: 12.2 + Math.random() * 5,
+        sortino: 1.2 + Math.random() * 0.8,
+        sharpe: 0.9 + Math.random() * 0.6,
+      });
+      setLoading(false);
+    }
+    
+    loadData();
   }, []);
 
   const pieData = allocations.filter(a => a.weight > 2).map(a => ({ name: a.symbol, value: a.weight }));
@@ -58,7 +68,7 @@ export default function PortfolioPage() {
         <div className="page-header">
           <h2>Portfolio Optimizer</h2>
           <div className="subtitle">Sortino-Omega optimization · PyPortfolioOpt · Regime-constrained</div>
-          <div className="data-badge demo"><span className="pulse"></span>DEMO · FCS-weighted allocation</div>
+          <div className={`data-badge ${dataSource === 'LIVE' ? 'live' : 'demo'}`}><span className="pulse"></span>{dataSource === 'LIVE' ? 'LIVE' : 'DEMO'} · FCS-weighted allocation</div>
         </div>
 
         <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', marginBottom: 24 }}>

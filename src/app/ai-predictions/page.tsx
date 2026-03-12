@@ -1,7 +1,8 @@
 'use client';
 import { useState, useEffect } from 'react';
 import Sidebar from '@/components/Sidebar';
-import { DEMO_STOCKS, generateHistoricalPrices } from '@/lib/demo-data';
+import { generateHistoricalPrices } from '@/lib/demo-data';
+import { fetchLiveStocks } from '@/lib/api-client';
 import { analyzeStock, computeTechnicalIndicators } from '@/lib/analysis-engine';
 import { LayerWeights } from '@/lib/types';
 import {
@@ -51,8 +52,7 @@ interface ModelMetrics {
 
 // ─── Local ML Engine (same as backend, runs client-side for demo) ───────────
 
-function generateAIPredictions(): { predictions: AIPrediction[]; metrics: ModelMetrics; featureImportance: { feature: string; importance: number }[] } {
-  const stocks = DEMO_STOCKS;
+function generateAIPredictions(stocks: any[]): { predictions: AIPrediction[]; metrics: ModelMetrics; featureImportance: { feature: string; importance: number }[] } {
   const predictions: AIPrediction[] = [];
   const weights = { fvl: 0.25, tml: 0.30, ssil: 0.15, gtbil: 0.15, mrlll: 0.15 } as LayerWeights;
 
@@ -275,14 +275,21 @@ export default function AIPredictionsPage() {
     metrics: ModelMetrics;
     featureImportance: { feature: string; importance: number }[];
   } | null>(null);
+  const [dataSource, setDataSource] = useState<'LIVE' | 'DEMO'>('DEMO');
   const [selectedPrediction, setSelectedPrediction] = useState<AIPrediction | null>(null);
 
   useEffect(() => {
-    const result = generateAIPredictions();
-    setData(result);
-    if (result.predictions.length > 0) {
-      setSelectedPrediction(result.predictions[0]);
+    async function loadData() {
+      const stocksData = await fetchLiveStocks();
+      setDataSource(stocksData.source);
+      const result = generateAIPredictions(stocksData.stocks);
+      setData(result);
+      if (result.predictions.length > 0) {
+        setSelectedPrediction(result.predictions[0]);
+      }
     }
+    
+    loadData();
   }, []);
 
   if (!data) return <div className="app-layout"><Sidebar /><main className="main-content"><div style={{ padding: '2rem', color: 'var(--text-secondary)' }}>Loading AI Engine...</div></main></div>;
@@ -315,10 +322,13 @@ export default function AIPredictionsPage() {
           </p>
           <div style={{
             display: 'inline-flex', gap: '0.5rem', padding: '0.4rem 1rem',
-            background: 'rgba(0,255,136,0.1)', border: '1px solid rgba(0,255,136,0.3)',
-            borderRadius: '2rem', color: '#00ff88', fontSize: '0.8rem', fontFamily: 'var(--font-mono)',
+            background: dataSource === 'LIVE' ? 'rgba(0,255,136,0.1)' : 'rgba(255, 193, 7, 0.12)', 
+            border: dataSource === 'LIVE' ? '1px solid rgba(0,255,136,0.3)' : '1px solid rgba(255, 193, 7, 0.2)',
+            borderRadius: '2rem', 
+            color: dataSource === 'LIVE' ? '#00ff88' : '#ffc107', 
+            fontSize: '0.8rem', fontFamily: 'var(--font-mono)',
           }}>
-            <Cpu size={14} /> DEMO DATA · {predictions.length} stocks analyzed · {riseCount} bullish signals
+            <Cpu size={14} /> {dataSource === 'LIVE' ? 'LIVE DATA' : 'DEMO DATA'} · {predictions.length} stocks analyzed · {riseCount} bullish signals
           </div>
         </div>
 

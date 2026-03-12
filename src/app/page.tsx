@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import Sidebar from '@/components/Sidebar';
-import { DEMO_STOCKS, DEMO_MARKET_OVERVIEW, DEMO_SECTOR_PERFORMANCE, generateHistoricalPrices } from '@/lib/demo-data';
-import { computeFCS, computeTechnicalIndicators, computeFVL, computeSSIL, computeGTBIL } from '@/lib/analysis-engine';
-import { LayerWeights, Stock, DailyPrediction } from '@/lib/types';
+import { DEMO_SECTOR_PERFORMANCE, generateHistoricalPrices } from '@/lib/demo-data';
+import { fetchLiveStocks, fetchLiveMarket } from '@/lib/api-client';
+import { computeFCS } from '@/lib/analysis-engine';
+import { LayerWeights, Stock } from '@/lib/types';
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar,
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
@@ -27,29 +28,86 @@ interface AnalyzedStock {
   mrlll: number;
 }
 
+interface MarketData {
+  nepseIndex: number;
+  nepseChange: number;
+  nepseChangePercent: number;
+  totalTurnover: number;
+  totalVolume: number;
+  advancers: number;
+  decliners: number;
+  unchanged: number;
+  interbankRate: number;
+  tBillYield: number;
+  regime: string;
+}
+
 export default function DashboardPage() {
   const [analyzed, setAnalyzed] = useState<AnalyzedStock[]>([]);
   const [loading, setLoading] = useState(true);
-  const market = DEMO_MARKET_OVERVIEW;
+  const [dataSource, setDataSource] = useState<'LIVE' | 'DEMO'>('DEMO');
+  const [market, setMarket] = useState<MarketData>({
+    nepseIndex: 0,
+    nepseChange: 0,
+    nepseChangePercent: 0,
+    totalTurnover: 0,
+    totalVolume: 0,
+    advancers: 0,
+    decliners: 0,
+    unchanged: 0,
+    interbankRate: 0,
+    tBillYield: 0,
+    regime: 'BULL TREND',
+  });
 
   useEffect(() => {
-    const results: AnalyzedStock[] = DEMO_STOCKS.map(stock => {
-      const history = generateHistoricalPrices(stock);
-      const fcs = computeFCS(stock, history, DEFAULT_WEIGHTS);
-      return {
-        stock,
-        fcs: fcs.score,
-        signal: fcs.signal,
-        fvl: fcs.layerScores.fvl,
-        tml: fcs.layerScores.tml,
-        ssil: fcs.layerScores.ssil,
-        gtbil: fcs.layerScores.gtbil,
-        mrlll: fcs.layerScores.mrlll,
-      };
-    });
-    results.sort((a, b) => b.fcs - a.fcs);
-    setAnalyzed(results);
-    setLoading(false);
+    async function loadData() {
+      setLoading(true);
+      
+      // Fetch live stocks and market data
+      const [stocksData, marketData] = await Promise.all([
+        fetchLiveStocks(),
+        fetchLiveMarket(),
+      ]);
+
+      setDataSource(stocksData.source);
+      
+      // Update market data
+      setMarket({
+        nepseIndex: marketData.nepseIndex,
+        nepseChange: marketData.change,
+        nepseChangePercent: marketData.changePercent,
+        totalTurnover: marketData.totalTurnover,
+        totalVolume: marketData.totalVolume,
+        advancers: marketData.advances,
+        decliners: marketData.declines,
+        unchanged: marketData.unchanged,
+        interbankRate: marketData.moneyRates?.interbank || 5.0,
+        tBillYield: marketData.moneyRates?.t91 || 6.5,
+        regime: 'BULL TREND', // Will be enhanced with regime detection later
+      });
+
+      // Analyze stocks
+      const results: AnalyzedStock[] = stocksData.stocks.map(stock => {
+        const history = generateHistoricalPrices(stock);
+        const fcs = computeFCS(stock, history, DEFAULT_WEIGHTS);
+        return {
+          stock,
+          fcs: fcs.score,
+          signal: fcs.signal,
+          fvl: fcs.layerScores.fvl,
+          tml: fcs.layerScores.tml,
+          ssil: fcs.layerScores.ssil,
+          gtbil: fcs.layerScores.gtbil,
+          mrlll: fcs.layerScores.mrlll,
+        };
+      });
+      results.sort((a, b) => b.fcs - a.fcs);
+      setAnalyzed(results);
+      setLoading(false);
+    }
+
+    loadData();
   }, []);
 
   const topPicks = analyzed.slice(0, 5);
@@ -82,9 +140,9 @@ export default function DashboardPage() {
         <div className="page-header">
           <h2>Market Intelligence Dashboard</h2>
           <div className="subtitle">NEPSE-ALPHA ULTIMATE · Five-Layer Prediction Engine</div>
-          <div className="data-badge demo">
+          <div className={`data-badge ${dataSource === 'LIVE' ? 'live' : 'demo'}`}>
             <span className="pulse"></span>
-            DEMO DATA · {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            {dataSource === 'LIVE' ? 'LIVE DATA' : 'DEMO DATA'} · {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
           </div>
         </div>
 
