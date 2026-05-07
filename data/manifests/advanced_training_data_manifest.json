@@ -1,0 +1,24 @@
+{
+  "profile": "advanced",
+  "started_at": "2026-05-07T18:40:46.051265",
+  "symbols_requested": 334,
+  "market_files_written": 334,
+  "market_files_skipped": 0,
+  "fundamental_rows_written": 192,
+  "news_rows_written": 8921,
+  "macro_files_written": 14,
+  "failed_symbols": [],
+  "sources": {
+    "market": "ShareSansar company-price-history",
+    "fundamentals": "ShareSansar company-quarterly-report",
+    "news": "ShareSansar company-news-category / company-announcement-category / category/latest",
+    "macro": "Yahoo Finance chart endpoint / NRB official forex API / World Bank indicator API"
+  },
+  "finished_at": "2026-05-07T18:54:26.040960",
+  "duration_seconds": 819.99,
+  "nepse_index_rows": 6082,
+  "limitations": [
+    "Public internet sources currently expose about 26 years of NEPSE index history starting around 2000-01-03, not a full 40-50 year institutional archive.",
+    "ShareSansar quarterly-report pages provide the latest available quarterly snapshot per company; they are valuable for advanced scoring but not a perfect historical statement warehouse."
+  ]
+}

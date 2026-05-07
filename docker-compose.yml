@@ -1,0 +1,128 @@
+version: "3.9"
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: nepse-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nepse
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: nepse-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: nepse-backend
+    restart: unless-stopped
+    command: uvicorn backend.server:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@timescaledb:5432/nepse
+      REDIS_URL: redis://redis:6379/0
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      HISTORICAL_DATA_DIR: /app/data/market
+      FUNDAMENTAL_DATA_DIR: /app/data/fundamentals
+      MACRO_DATA_DIR: /app/data/macro
+      NEWS_DATA_DIR: /app/data/news
+    depends_on:
+      - timescaledb
+      - redis
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - ml-artifacts:/app/backend/model_artifacts
+      - ./data:/app/data
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: nepse-worker
+    restart: unless-stopped
+    command: celery -A backend.autonomous.tasks.celery_app worker --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@timescaledb:5432/nepse
+      REDIS_URL: redis://redis:6379/0
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      HISTORICAL_DATA_DIR: /app/data/market
+      FUNDAMENTAL_DATA_DIR: /app/data/fundamentals
+      MACRO_DATA_DIR: /app/data/macro
+      NEWS_DATA_DIR: /app/data/news
+    depends_on:
+      - backend
+    volumes:
+      - .:/app
+      - ml-artifacts:/app/backend/model_artifacts
+      - ./data:/app/data
+
+  beat:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: nepse-beat
+    restart: unless-stopped
+    command: celery -A backend.autonomous.tasks.celery_app beat --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@timescaledb:5432/nepse
+      REDIS_URL: redis://redis:6379/0
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      HISTORICAL_DATA_DIR: /app/data/market
+      FUNDAMENTAL_DATA_DIR: /app/data/fundamentals
+      MACRO_DATA_DIR: /app/data/macro
+      NEWS_DATA_DIR: /app/data/news
+    depends_on:
+      - worker
+    volumes:
+      - .:/app
+      - ml-artifacts:/app/backend/model_artifacts
+      - ./data:/app/data
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: nepse-mlflow
+    restart: unless-stopped
+    command: >
+      sh -lc "mkdir -p /mlflow/artifacts &&
+      mlflow server
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0
+      --port 5000"
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-data:/mlflow
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: nepse-web
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  timescaledb-data:
+  ml-artifacts:
+  mlflow-data:
