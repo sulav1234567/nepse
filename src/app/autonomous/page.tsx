@@ -114,6 +114,11 @@ export default function AutonomousPage() {
   const [dashboard, setDashboard] = useState<ApiAutonomousDashboardResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const scoringIsStale =
+    !!dashboard?.status.latest_training_at &&
+    !!dashboard?.status.latest_scoring_at &&
+    new Date(dashboard.status.latest_training_at).getTime() > new Date(dashboard.status.latest_scoring_at).getTime();
+  const hasRatedBuys = dashboard?.top_buys.some((card) => card.overall_signal === 'BUY' || card.overall_signal === 'STRONG BUY') ?? false;
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -177,6 +182,12 @@ export default function AutonomousPage() {
 
         {error ? (
           <div className="glass-card" style={{ color: 'var(--bearish)', marginBottom: 24 }}>{error}</div>
+        ) : null}
+
+        {scoringIsStale ? (
+          <div className="glass-card" style={{ color: 'var(--hold)', marginBottom: 24 }}>
+            Autonomous signals are older than the latest trained model. The page may still be showing the previous scoring run until a fresh rescore finishes.
+          </div>
         ) : null}
 
         {dashboard ? (
@@ -284,10 +295,15 @@ export default function AutonomousPage() {
             <div className="dashboard-grid grid-2" style={{ marginBottom: 24 }}>
               <div className="glass-card">
                 <div className="glass-card-header">
-                  <div className="glass-card-title">Top 10 Buy</div>
+                  <div className="glass-card-title">Top 10 Buy Candidates</div>
                 </div>
                 <div style={{ display: 'grid', gap: 12 }}>
-                  {dashboard.top_buys.slice(0, 5).map((card) => (
+                  {!hasRatedBuys ? (
+                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                      No symbols cleared the buy threshold in the current scoring run, so this list falls back to the highest-ranked candidates from the latest model snapshot.
+                    </div>
+                  ) : null}
+                  {dashboard.top_buys.slice(0, 10).map((card) => (
                     <SignalMiniCard key={card.symbol} card={card} />
                   ))}
                 </div>
@@ -298,7 +314,7 @@ export default function AutonomousPage() {
                   <div className="glass-card-title">Top 10 Avoid</div>
                 </div>
                 <div style={{ display: 'grid', gap: 12 }}>
-                  {dashboard.top_avoids.slice(0, 5).map((card) => (
+                  {dashboard.top_avoids.slice(0, 10).map((card) => (
                     <SignalMiniCard key={card.symbol} card={card} />
                   ))}
                 </div>

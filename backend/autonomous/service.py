@@ -8,6 +8,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import lru_cache
+from threading import Lock
 from typing import Any, Optional
 
 import numpy as np
@@ -100,6 +101,9 @@ class AutonomousResearchPlatform:
         self.dataset_builder = InternetTrainingDataBuilder(settings=self.settings)
         self.model_suite = AutonomousModelSuite.load(settings=self.settings)
         self._latest_backtest: Optional[BacktestResult] = None
+        self._signal_cache_lock = Lock()
+        self._cached_signal_cards: list[SignalCard] = []
+        self._cached_signal_cards_as_of: Optional[datetime] = None
 
     def initialize(self) -> None:
         self.database.initialize()
@@ -156,7 +160,9 @@ class AutonomousResearchPlatform:
             latest_bar = self.database.latest_timestamp(session, MarketBar)
             latest_fundamental = self.database.latest_timestamp(session, FundamentalSnapshot, column_name="report_date")
             latest_macro = self.database.latest_timestamp(session, MacroSeriesPoint)
+            latest_prediction_run = session.query(PredictionRun.as_of).order_by(PredictionRun.as_of.desc()).first()
         latest_ingestion = max(item for item in [latest_bar, latest_fundamental, latest_macro] if item is not None) if any([latest_bar, latest_fundamental, latest_macro]) else None
+        latest_scoring_at = latest_prediction_run[0] if latest_prediction_run is not None else self._cached_signal_cards_as_of
         symbols_covered = self._symbols()
         return SystemStatus(
             as_of=datetime.utcnow(),
@@ -164,7 +170,7 @@ class AutonomousResearchPlatform:
             timescaledb_active=self.database.is_timescaledb_active,
             latest_ingestion_at=latest_ingestion,
             latest_training_at=self.model_suite.last_trained_at,
-            latest_scoring_at=datetime.utcnow(),
+            latest_scoring_at=latest_scoring_at,
             bootstrap_mode=counts["bars"] == 0 or any("SIMULATED_BOOTSTRAP" in source for source in self._latest_sources()),
             symbols_covered=len(symbols_covered),
             bars_loaded=counts["bars"],
@@ -414,7 +420,75 @@ class AutonomousResearchPlatform:
             return 65.0 if abs(expected_return) < 3 else 45.0
         return 60.0
 
-    def generate_signal_cards(self, limit: int = 25, persist: bool = True) -> list[SignalCard]:
+    def _build_signal_card_from_row(self, as_of: datetime, row: PredictionSignal) -> SignalCard:
+        return SignalCard(
+            as_of=as_of,
+            symbol=row.symbol,
+            company_name=row.company_name,
+            sector=row.sector,
+            overall_signal=row.signal,
+            confidence_score=row.confidence_score,
+            predicted_targets=PredictionTargets(
+                target_7d=row.target_7d,
+                target_30d=row.target_30d,
+                target_90d=row.target_90d,
+            ),
+            expected_return_percent=row.expected_return_percent,
+            risk_adjusted_return=row.risk_adjusted_return,
+            risk_level=row.risk_level,
+            technical=TechnicalBreakdown(**(row.technical_json or {})),
+            fundamentals=FundamentalBreakdown(**(row.fundamental_json or {})),
+            global_view=GlobalBreakdown(**(row.global_json or {})),
+            top_reasons=list(row.reasons_json or []),
+            historical_accuracy=row.historical_accuracy,
+            warnings=list(row.warnings_json or []),
+            model_votes=[ModelVote(**vote) for vote in (row.model_votes_json or [])],
+            liquidity_score=row.liquidity_score,
+            sentiment_score=row.sentiment_score,
+            regime_alignment_score=row.regime_alignment_score,
+        )
+
+    def _load_latest_persisted_signal_cards(self) -> tuple[Optional[datetime], Optional[str], list[SignalCard]]:
+        with self.database.session() as session:
+            latest_run = session.query(PredictionRun).order_by(PredictionRun.as_of.desc()).first()
+            if latest_run is None:
+                return None, None, []
+            rows = (
+                session.query(PredictionSignal)
+                .filter(PredictionSignal.run_id == latest_run.id)
+                .all()
+            )
+        cards = [self._build_signal_card_from_row(latest_run.as_of, row) for row in rows]
+        cards.sort(key=lambda item: (item.risk_adjusted_return, item.confidence_score), reverse=True)
+        return latest_run.as_of, latest_run.model_version, cards
+
+    def _signals_are_stale(self, as_of: Optional[datetime], model_version: Optional[str]) -> bool:
+        if as_of is None:
+            return True
+        if model_version and model_version != self.model_suite.model_version:
+            return True
+        if self.model_suite.last_trained_at is not None and as_of < self.model_suite.last_trained_at:
+            return True
+        return False
+
+    def signal_cards(self, limit: int = 25) -> list[SignalCard]:
+        persisted_as_of, persisted_model_version, persisted_cards = self._load_latest_persisted_signal_cards()
+        if persisted_cards:
+            with self._signal_cache_lock:
+                self._cached_signal_cards = persisted_cards
+                self._cached_signal_cards_as_of = persisted_as_of
+            return persisted_cards[:limit]
+
+        with self._signal_cache_lock:
+            if len(self._cached_signal_cards) >= limit:
+                return self._cached_signal_cards[:limit]
+
+        return self.refresh_signal_cards(limit=limit)
+
+    def refresh_signal_cards(self, limit: int = 25) -> list[SignalCard]:
+        return self.generate_signal_cards(limit=limit, persist=True, live_mode=True)
+
+    def generate_signal_cards(self, limit: int = 25, persist: bool = True, live_mode: bool = True) -> list[SignalCard]:
         if not self._symbols():
             self.run_ingestion_cycle()
         if not self._symbols():
@@ -463,7 +537,7 @@ class AutonomousResearchPlatform:
             if feature_frame.empty:
                 continue
 
-            prediction = self.model_suite.predict_latest(feature_frame, sentiment_value)
+            prediction = self.model_suite.predict_latest_live(feature_frame, sentiment_value) if live_mode else self.model_suite.predict_latest(feature_frame, sentiment_value)
             heuristic_base = (
                 (technical_snapshot.technical_score - 50) * 0.18
                 + (fundamental_score.score - 50) * 0.12
@@ -488,8 +562,17 @@ class AutonomousResearchPlatform:
                 expected_returns = heuristic_returns
                 prediction["confidence"] = max(prediction["confidence"], float(np.clip(52 + abs(heuristic_30) * 2.2, 0, 100)))
             else:
+                model_weight = 0.65
+                heuristic_weight = 0.35
+                if prediction.get("stability_mode") == "live_fallback":
+                    model_weight = 0.4
+                    heuristic_weight = 0.6
                 expected_returns = {
-                    horizon: round(prediction["expected_returns"][horizon] * 0.65 + heuristic_returns[horizon] * 0.35, 4)
+                    horizon: round(
+                        prediction["expected_returns"][horizon] * model_weight
+                        + heuristic_returns[horizon] * heuristic_weight,
+                        4,
+                    )
                     for horizon in (7, 30, 90)
                 }
             expected_return_percent = float(expected_returns[30] * 0.55 + expected_returns[7] * 0.25 + expected_returns[90] * 0.20)
@@ -591,6 +674,9 @@ class AutonomousResearchPlatform:
             )
 
         cards.sort(key=lambda item: (item.risk_adjusted_return, item.confidence_score), reverse=True)
+        with self._signal_cache_lock:
+            self._cached_signal_cards = cards
+            self._cached_signal_cards_as_of = as_of
 
         if persist and cards:
             run_key = as_of.strftime("signal-%Y%m%d%H%M%S")
@@ -699,9 +785,21 @@ class AutonomousResearchPlatform:
                         inserted += 1
         return {"outcomes_recorded": inserted}
 
+    def system_status(self) -> SystemStatus:
+        return self._status()
+
     def dashboard(self, limit: int = 10) -> AutonomousDashboardResponse:
-        cards = self.generate_signal_cards(limit=max(limit * 2, 20))
+        cards = self.signal_cards(limit=max(limit * 2, 20))
         top_buys = [card for card in cards if card.overall_signal in {"STRONG BUY", "BUY"}][:limit]
+        if len(top_buys) < limit:
+            seen = {card.symbol for card in top_buys}
+            for card in cards:
+                if card.symbol in seen:
+                    continue
+                top_buys.append(card)
+                seen.add(card.symbol)
+                if len(top_buys) >= limit:
+                    break
         top_avoids = [card for card in reversed(cards) if card.overall_signal in {"SELL", "STRONG SELL"}][:limit]
         if len(top_avoids) < limit:
             fallback = sorted(cards, key=lambda item: (item.risk_adjusted_return, item.confidence_score))[:limit]
@@ -728,7 +826,7 @@ class AutonomousResearchPlatform:
         return AutonomousDashboardResponse(
             architecture=self.architecture_components(),
             architecture_diagram=ARCHITECTURE_DIAGRAM.strip(),
-            status=self._status(),
+            status=self.system_status(),
             regime=MarketRegimeSnapshot(**regime),
             monitoring=self.monitoring_snapshot(),
             sector_rotation=[SectorRotationSignal(**item) for item in sector_rotation[:8]],

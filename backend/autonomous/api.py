@@ -19,12 +19,17 @@ def autonomous_dashboard(platform: AutonomousResearchPlatform = Depends(get_rese
 
 @router.get("/signals", response_model=list[SignalCard])
 def autonomous_signals(limit: int = 25, platform: AutonomousResearchPlatform = Depends(get_research_platform)) -> list[SignalCard]:
-    return platform.generate_signal_cards(limit=limit)
+    return platform.signal_cards(limit=limit)
+
+
+@router.post("/signals/refresh", response_model=list[SignalCard])
+def autonomous_refresh_signals(limit: int = 25, platform: AutonomousResearchPlatform = Depends(get_research_platform)) -> list[SignalCard]:
+    return platform.refresh_signal_cards(limit=limit)
 
 
 @router.get("/signals/{symbol}", response_model=SignalCard)
 def autonomous_signal_detail(symbol: str, platform: AutonomousResearchPlatform = Depends(get_research_platform)) -> SignalCard:
-    cards = platform.generate_signal_cards(limit=200)
+    cards = platform.signal_cards(limit=500)
     for card in cards:
         if card.symbol.upper() == symbol.upper():
             return card
@@ -33,8 +38,7 @@ def autonomous_signal_detail(symbol: str, platform: AutonomousResearchPlatform =
 
 @router.get("/system/status")
 def autonomous_system_status(platform: AutonomousResearchPlatform = Depends(get_research_platform)) -> dict:
-    dashboard = platform.dashboard(limit=5)
-    return dashboard.status.model_dump()
+    return platform.system_status().model_dump()
 
 
 @router.get("/backtests/latest")

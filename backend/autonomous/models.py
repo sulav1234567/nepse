@@ -5,6 +5,7 @@ Model suite for the autonomous NEPSE prediction platform.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -66,6 +67,21 @@ except Exception:
     PPO = None
 
 
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _torch_device() -> Any:
+    if not HAS_TORCH:
+        return None
+    if os.getenv("NEPSE_FORCE_CPU", "").strip().lower() in {"1", "true", "yes"}:
+        return torch.device("cpu")
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 def _build_sequences(
     frame: pd.DataFrame,
     feature_cols: list[str],
@@ -99,6 +115,11 @@ class BaseModelPrediction:
     confidence: float
     directional_bias: str
     rationale: str
+
+
+def _neutral_prediction(model_name: str, rationale: str, confidence: float = 45.0) -> BaseModelPrediction:
+    returns = {horizon: 0.0 for horizon in HORIZONS}
+    return BaseModelPrediction(model_name, returns, confidence, "HOLD", rationale)
 
 
 class TreeEnsembleModel:
@@ -239,6 +260,10 @@ class SequenceModelBase:
         self.is_trained = False
         self.metrics: dict[str, float] = {}
 
+    def _move_model_to_cpu(self) -> None:
+        if HAS_TORCH and self.model is not None and hasattr(self.model, "to"):
+            self.model.to(torch.device("cpu"))
+
     def _prepare_arrays(self, frame: pd.DataFrame, feature_cols: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         x_raw = np.nan_to_num(frame[feature_cols].to_numpy(dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
         x_scaled = self.scaler.fit_transform(x_raw)
@@ -269,8 +294,25 @@ class SequenceModelBase:
         raise NotImplementedError
 
     def predict_latest(self, frame: pd.DataFrame, feature_cols: list[str]) -> BaseModelPrediction:
-        predicted = self.predict_frame(frame, feature_cols).iloc[-1]
-        returns = {horizon: float(predicted[f"{self.output_prefix}_return_{horizon}d"]) for horizon in HORIZONS}
+        returns = {horizon: 0.0 for horizon in HORIZONS}
+        if self.is_trained and len(frame) > self.sequence_length:
+            latest_window = frame.tail(self.sequence_length + 1).copy()
+            sequences, _ = self._prepare_prediction_sequences(latest_window, feature_cols)
+            if len(sequences) > 0:
+                latest_sequence = sequences[-1:]
+                if HAS_TORCH:
+                    device = _torch_device()
+                    self.model.to(device)
+                    self.model.eval()
+                    with torch.no_grad():
+                        latest_tensor = torch.as_tensor(latest_sequence, dtype=torch.float32, device=device)
+                        predicted = self.model(latest_tensor).detach().cpu().numpy()[0]
+                else:
+                    predicted = self.model.predict(latest_sequence.reshape(len(latest_sequence), -1))[0]
+                returns = {
+                    horizon: float(predicted[horizon_index])
+                    for horizon_index, horizon in enumerate(HORIZONS)
+                }
         confidence = float(np.clip(55 + (1 / (1 + np.std(list(returns.values())))) * 20, 0, 100))
         directional_bias = _direction_label(returns[7])
         return BaseModelPrediction(self.name, returns, round(confidence, 2), directional_bias, self.rationale)
@@ -286,14 +328,28 @@ class SequenceLSTMModel(SequenceModelBase):
         if len(sequences) == 0:
             return
         if HAS_TORCH:
-            self.model = LSTMForecaster(len(feature_cols))
+            device = _torch_device()
+            self.model = LSTMForecaster(
+                len(feature_cols),
+                hidden_size=_env_int("NEPSE_LSTM_HIDDEN_SIZE", 96),
+            ).to(device)
             optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
             loss_fn = nn.SmoothL1Loss()
-            dataset = TensorDataset(torch.tensor(sequences), torch.tensor(targets))
-            loader = DataLoader(dataset, batch_size=64, shuffle=True)
+            dataset = TensorDataset(
+                torch.as_tensor(sequences, dtype=torch.float32),
+                torch.as_tensor(targets, dtype=torch.float32),
+            )
+            loader = DataLoader(
+                dataset,
+                batch_size=_env_int("NEPSE_SEQUENCE_BATCH_SIZE", 256),
+                shuffle=True,
+                pin_memory=device.type == "cuda",
+            )
             self.model.train()
-            for _ in range(4):
+            for _ in range(_env_int("NEPSE_LSTM_EPOCHS", 50)):
                 for batch_x, batch_y in loader:
+                    batch_x = batch_x.to(device, non_blocking=True)
+                    batch_y = batch_y.to(device, non_blocking=True)
                     optimizer.zero_grad()
                     prediction = self.model(batch_x)
                     loss = loss_fn(prediction, batch_y)
@@ -315,9 +371,12 @@ class SequenceLSTMModel(SequenceModelBase):
         if len(sequences) == 0:
             return result
         if HAS_TORCH:
+            device = _torch_device()
+            self.model.to(device)
             self.model.eval()
             with torch.no_grad():
-                predicted = self.model(torch.tensor(sequences)).numpy()
+                sequence_tensor = torch.as_tensor(sequences, dtype=torch.float32, device=device)
+                predicted = self.model(sequence_tensor).detach().cpu().numpy()
         else:
             predicted = self.model.predict(sequences.reshape(len(sequences), -1))
         for horizon_index, horizon in enumerate(HORIZONS):
@@ -335,14 +394,28 @@ class TemporalFusionStyleModel(SequenceModelBase):
         if len(sequences) == 0:
             return
         if HAS_TORCH:
-            self.model = AttentionForecaster(len(feature_cols))
+            device = _torch_device()
+            self.model = AttentionForecaster(
+                len(feature_cols),
+                hidden_size=_env_int("NEPSE_TFT_HIDDEN_SIZE", 96),
+            ).to(device)
             optimizer = torch.optim.AdamW(self.model.parameters(), lr=0.001)
             loss_fn = nn.SmoothL1Loss()
-            dataset = TensorDataset(torch.tensor(sequences), torch.tensor(targets))
-            loader = DataLoader(dataset, batch_size=64, shuffle=True)
+            dataset = TensorDataset(
+                torch.as_tensor(sequences, dtype=torch.float32),
+                torch.as_tensor(targets, dtype=torch.float32),
+            )
+            loader = DataLoader(
+                dataset,
+                batch_size=_env_int("NEPSE_SEQUENCE_BATCH_SIZE", 256),
+                shuffle=True,
+                pin_memory=device.type == "cuda",
+            )
             self.model.train()
-            for _ in range(4):
+            for _ in range(_env_int("NEPSE_TFT_EPOCHS", 50)):
                 for batch_x, batch_y in loader:
+                    batch_x = batch_x.to(device, non_blocking=True)
+                    batch_y = batch_y.to(device, non_blocking=True)
                     optimizer.zero_grad()
                     prediction = self.model(batch_x)
                     loss = loss_fn(prediction, batch_y)
@@ -364,9 +437,12 @@ class TemporalFusionStyleModel(SequenceModelBase):
         if len(sequences) == 0:
             return result
         if HAS_TORCH:
+            device = _torch_device()
+            self.model.to(device)
             self.model.eval()
             with torch.no_grad():
-                predicted = self.model(torch.tensor(sequences)).numpy()
+                sequence_tensor = torch.as_tensor(sequences, dtype=torch.float32, device=device)
+                predicted = self.model(sequence_tensor).detach().cpu().numpy()
         else:
             predicted = self.model.predict(sequences.reshape(len(sequences), -1))
         for horizon_index, horizon in enumerate(HORIZONS):
@@ -416,8 +492,16 @@ class ReinforcementLearningStrategyModel:
                 return observation, reward, terminated, False, {}
 
         env = TradingEnv(train_frame, feature_cols, self.transaction_cost_bps)
-        self.model = PPO("MlpPolicy", env, verbose=0, n_steps=64, batch_size=64, learning_rate=3e-4)
-        self.model.learn(total_timesteps=1000)
+        self.model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=0,
+            n_steps=_env_int("NEPSE_PPO_N_STEPS", 256),
+            batch_size=_env_int("NEPSE_PPO_BATCH_SIZE", 256),
+            learning_rate=3e-4,
+            device="auto",
+        )
+        self.model.learn(total_timesteps=_env_int("NEPSE_PPO_TIMESTEPS", 100_000))
         self.is_trained = True
 
     def predict_frame(self, frame: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
@@ -549,6 +633,11 @@ class ContextualMetaLearner:
 
 class AutonomousModelSuite:
     """Owns all model families and the contextual stacking layer."""
+    live_return_caps = {
+        7: 12.0,
+        30: 20.0,
+        90: 32.0,
+    }
 
     def __init__(self, settings: Optional[Settings] = None) -> None:
         self.settings = settings or get_settings()
@@ -578,6 +667,8 @@ class AutonomousModelSuite:
 
     def save(self) -> None:
         self.artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        self.lstm._move_model_to_cpu()
+        self.tft._move_model_to_cpu()
         joblib.dump(self, self.artifact_path)
 
     @classmethod
@@ -598,8 +689,9 @@ class AutonomousModelSuite:
         )
         dataset = dataset.sort_values("date").reset_index(drop=True)
         dataset = dataset.replace([np.inf, -np.inf], np.nan).dropna(subset=["target_return_7d", "target_return_30d", "target_return_90d"])
-        if len(dataset) > 12_000:
-            dataset = dataset.tail(12_000).reset_index(drop=True)
+        max_rows = _env_int("NEPSE_TRAINING_MAX_ROWS", 12_000)
+        if len(dataset) > max_rows:
+            dataset = dataset.tail(max_rows).reset_index(drop=True)
         if len(dataset) < 120:
             logger.warning("Insufficient data to train the autonomous model suite.")
             return
@@ -656,16 +748,58 @@ class AutonomousModelSuite:
                 predictions.loc[index, f"meta_return_{horizon}d"] = returns[horizon]
         return predictions.fillna(0.0), np.array(probabilities)
 
-    def predict_latest(self, feature_frame: pd.DataFrame, sentiment_value: float) -> dict[str, Any]:
+    def _prepare_prediction_frame(self, feature_frame: pd.DataFrame) -> pd.DataFrame:
         if feature_frame.empty:
             raise ValueError("Feature frame is empty.")
         if not self.feature_cols:
             self.feature_cols = feature_columns(feature_frame)
+        prepared_frame = feature_frame.copy()
+        required_columns = set(self.feature_cols) | set(self.context_cols)
+        for column in required_columns:
+            if column not in prepared_frame.columns:
+                prepared_frame[column] = 0.0
+        return prepared_frame
 
-        tree_vote = self.tree.predict_latest(feature_frame, self.feature_cols)
-        lstm_vote = self.lstm.predict_latest(feature_frame, self.feature_cols) if self.lstm.is_trained else BaseModelPrediction(self.lstm.name, {h: 0.0 for h in HORIZONS}, 45.0, "HOLD", self.lstm.rationale)
-        tft_vote = self.tft.predict_latest(feature_frame, self.feature_cols) if self.tft.is_trained else BaseModelPrediction(self.tft.name, {h: 0.0 for h in HORIZONS}, 45.0, "HOLD", self.tft.rationale)
-        rl_vote = self.rl.predict_latest(feature_frame.fillna(0.0), self.feature_cols)
+    def _build_vote_payload(self, votes: list[BaseModelPrediction]) -> list[dict[str, Any]]:
+        return [
+            {
+                "model_name": vote.model_name,
+                "confidence": vote.confidence,
+                "predicted_return_7d": round(vote.returns[7], 4),
+                "predicted_return_30d": round(vote.returns[30], 4),
+                "predicted_return_90d": round(vote.returns[90], 4),
+                "directional_bias": vote.directional_bias,
+                "rationale": vote.rationale,
+            }
+            for vote in votes
+        ]
+
+    def _finalize_confidence(self, votes: list[BaseModelPrediction], base_confidence: float) -> float:
+        agreement = 1 - np.std([vote.returns[7] for vote in votes]) / max(
+            np.mean(np.abs([vote.returns[7] for vote in votes])) + 1e-6,
+            1.0,
+        )
+        return float(np.clip(base_confidence * 0.7 + agreement * 30, 0, 100))
+
+    def _clip_expected_returns(self, expected_returns: dict[int, float]) -> dict[int, float]:
+        return {
+            horizon: float(
+                np.clip(
+                    expected_returns.get(horizon, 0.0),
+                    -self.live_return_caps[horizon],
+                    self.live_return_caps[horizon],
+                )
+            )
+            for horizon in HORIZONS
+        }
+
+    def predict_latest(self, feature_frame: pd.DataFrame, sentiment_value: float) -> dict[str, Any]:
+        prepared_frame = self._prepare_prediction_frame(feature_frame)
+
+        tree_vote = self.tree.predict_latest(prepared_frame, self.feature_cols)
+        lstm_vote = self.lstm.predict_latest(prepared_frame, self.feature_cols) if self.lstm.is_trained else _neutral_prediction(self.lstm.name, self.lstm.rationale)
+        tft_vote = self.tft.predict_latest(prepared_frame, self.feature_cols) if self.tft.is_trained else _neutral_prediction(self.tft.name, self.tft.rationale)
+        rl_vote = self.rl.predict_latest(prepared_frame.fillna(0.0), self.feature_cols)
         sentiment_vote = self.sentiment.predict_latest(sentiment_value)
         votes = [tree_vote, lstm_vote, tft_vote, rl_vote, sentiment_vote]
 
@@ -688,8 +822,8 @@ class AutonomousModelSuite:
                 "sentiment_return_90d": [sentiment_vote.returns[90]],
             }
         )
-        context_columns = [column for column in self.context_cols if column in feature_frame.columns]
-        context_row = feature_frame[context_columns].tail(1).copy()
+        context_columns = [column for column in self.context_cols if column in prepared_frame.columns]
+        context_row = prepared_frame[context_columns].tail(1).copy()
 
         if self.meta.is_trained:
             expected_returns, confidence = self.meta.predict(base_row, context_row)
@@ -701,25 +835,53 @@ class AutonomousModelSuite:
             }
             confidence = float(np.mean([vote.confidence for vote in votes]))
 
-        vote_payload = [
-            {
-                "model_name": vote.model_name,
-                "confidence": vote.confidence,
-                "predicted_return_7d": round(vote.returns[7], 4),
-                "predicted_return_30d": round(vote.returns[30], 4),
-                "predicted_return_90d": round(vote.returns[90], 4),
-                "directional_bias": vote.directional_bias,
-                "rationale": vote.rationale,
-            }
-            for vote in votes
-        ]
-
-        agreement = 1 - np.std([vote.returns[7] for vote in votes]) / max(np.mean(np.abs([vote.returns[7] for vote in votes])) + 1e-6, 1.0)
-        confidence = float(np.clip(confidence * 0.7 + agreement * 30, 0, 100))
+        vote_payload = self._build_vote_payload(votes)
+        confidence = self._finalize_confidence(votes, confidence)
         return {
             "expected_returns": {horizon: round(expected_returns[horizon], 4) for horizon in HORIZONS},
             "confidence": round(confidence, 2),
             "votes": vote_payload,
             "historical_accuracy": self.metrics.get("accuracy_7d", 58.0),
             "model_version": self.model_version,
+        }
+
+    def predict_latest_live(self, feature_frame: pd.DataFrame, sentiment_value: float) -> dict[str, Any]:
+        prepared_frame = self._prepare_prediction_frame(feature_frame)
+
+        tree_vote = self.tree.predict_latest(prepared_frame, self.feature_cols)
+        lstm_vote = _neutral_prediction(
+            self.lstm.name,
+            f"{self.lstm.rationale} Live scoring currently bypasses this sequence vote to avoid PyTorch runtime stalls.",
+            confidence=35.0,
+        )
+        tft_vote = _neutral_prediction(
+            self.tft.name,
+            f"{self.tft.rationale} Live scoring currently bypasses this sequence vote to avoid PyTorch runtime stalls.",
+            confidence=35.0,
+        )
+        rl_vote = self.rl.predict_latest(prepared_frame.fillna(0.0), self.feature_cols)
+        sentiment_vote = self.sentiment.predict_latest(sentiment_value)
+        votes = [tree_vote, lstm_vote, tft_vote, rl_vote, sentiment_vote]
+
+        live_weights = np.array([0.58, 0.0, 0.0, 0.24, 0.18])
+        expected_returns = {
+            horizon: float(np.dot(live_weights, [vote.returns[horizon] for vote in votes]))
+            for horizon in HORIZONS
+        }
+        expected_returns = self._clip_expected_returns(expected_returns)
+        base_confidence = float(
+            np.average(
+                [tree_vote.confidence, rl_vote.confidence, sentiment_vote.confidence],
+                weights=[0.58, 0.24, 0.18],
+            )
+        )
+        confidence = self._finalize_confidence(votes, base_confidence)
+
+        return {
+            "expected_returns": {horizon: round(expected_returns[horizon], 4) for horizon in HORIZONS},
+            "confidence": round(confidence, 2),
+            "votes": self._build_vote_payload(votes),
+            "historical_accuracy": self.metrics.get("accuracy_7d", 58.0),
+            "model_version": self.model_version,
+            "stability_mode": "live_fallback",
         }

@@ -4,9 +4,11 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import styles from '../auth.module.css'
+import { useAuth } from '@/lib/auth-context'
 
 export default function RegisterPage() {
   const router = useRouter()
+  const { setAuthSession } = useAuth()
   const [formData, setFormData] = useState({
     email: '',
     username: '',
@@ -43,7 +45,7 @@ export default function RegisterPage() {
     setLoading(true)
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/auth/register', {
+      const response = await fetch('/api/auth/register', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -63,11 +65,7 @@ export default function RegisterPage() {
         return
       }
 
-      // Save token to localStorage
-      localStorage.setItem('access_token', data.access_token)
-      localStorage.setItem('user', JSON.stringify(data.user))
-
-      // Redirect to dashboard
+      setAuthSession(data.access_token, data.user)
       router.push('/')
     } catch (err) {
       setError('An error occurred. Please try again.')
