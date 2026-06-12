@@ -4,28 +4,6 @@ This notebook flow clones the private repo, refreshes latest NEPSE/public market
 
 **GPU is the recommended runtime — pick the A100 if you have Colab Pro+** (Runtime → Change runtime type → A100 GPU), otherwise the T4. A TPU (v5e-1) is also supported via `--device tpu`, but it only accelerates the LSTM/TFT sequence models, and the training loop's per-batch loss reads force frequent TPU syncs that erase most of the gain. The GPU runs the sequence models natively with no such penalty. The XGBoost/LightGBM ensemble and PPO agent run on the host CPU on either runtime.
 
-## Fastest Path on Colab Pro+: Terminal + A100
-
-Colab Pro/Pro+ includes a built-in **Terminal** (left sidebar). Training there survives closing the terminal pane, and the A100-tuned launcher handles everything:
-
-1. Upload `notebooks/nepse_colab_training.ipynb`, set the runtime to **A100 GPU**, and add the `GITHUB_TOKEN` secret (section 1 below).
-2. Run the first cells through "Terminal mode" — they load the token, clone the repo, mount Drive, and stash the token for the terminal.
-3. Open the Terminal and run:
-
-```bash
-bash /content/nepse-main/scripts/colab_terminal_train.sh
-```
-
-It installs dependencies and starts continuous training under `nohup` with A100-tuned settings (`--sequence-batch-size 512`), streaming the log live and saving it to Drive next to the artifacts. Append any `colab_continuous_train.py` flags to override defaults, e.g. a smoke test first:
-
-```bash
-bash /content/nepse-main/scripts/colab_terminal_train.sh \
-  --symbol-limit 20 --market-news-pages 2 --market-article-body-limit 20 \
-  --max-cycles 1 --max-training-rows 20000 --lstm-epochs 3 --tft-epochs 3 --ppo-timesteps 2000
-```
-
-Drive mounting and Colab Secrets only work from notebook cells, which is why step 2 runs in the notebook first. With Pro+ background execution, the runtime keeps training even after you close the browser tab.
-
 ## Fastest Path: Ready-Made Notebook
 
 Upload `notebooks/nepse_colab_training.ipynb` to [colab.research.google.com](https://colab.research.google.com) (File → Upload notebook), switch the runtime to **A100 GPU** (Runtime → Change runtime type; T4 if you don't have Pro+), add the `GITHUB_TOKEN` secret, and run the cells top to bottom. It covers everything in sections 1–5 below.
@@ -112,6 +90,7 @@ python scripts/colab_continuous_train.py \
   --lstm-epochs 50 \
   --tft-epochs 50 \
   --sequence-batch-size 256 \
+  --inference-batch-size 1024 \
   --ppo-timesteps 100000
 ```
 
