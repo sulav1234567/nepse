@@ -88,6 +88,11 @@ def _configure_environment(args: argparse.Namespace) -> Path:
     os.environ.setdefault("DATABASE_URL", f"sqlite:///{db_path}")
     os.environ.setdefault("MLFLOW_TRACKING_URI", f"file:{mlruns_dir}")
 
+    if args.device:
+        os.environ["NEPSE_DEVICE"] = args.device
+        if args.device in {"tpu", "xla"}:
+            os.environ.setdefault("PJRT_DEVICE", "TPU")
+
     os.environ.setdefault("NEPSE_TRAINING_MAX_ROWS", str(args.max_training_rows))
     os.environ.setdefault("NEPSE_LSTM_EPOCHS", str(args.lstm_epochs))
     os.environ.setdefault("NEPSE_TFT_EPOCHS", str(args.tft_epochs))
@@ -109,6 +114,13 @@ def _log_gpu() -> None:
             LOGGER.info("CUDA device: %s", torch.cuda.get_device_name(0))
     except Exception as exc:
         LOGGER.warning("Unable to inspect PyTorch/CUDA: %s", exc)
+    if os.environ.get("NEPSE_DEVICE", "").lower() in {"tpu", "xla"}:
+        try:
+            import torch_xla.core.xla_model as xm
+
+            LOGGER.info("XLA/TPU device: %s", xm.xla_device())
+        except Exception as exc:
+            LOGGER.warning("NEPSE_DEVICE=tpu set but torch_xla unavailable: %s", exc)
 
 
 def _copy_versioned_artifact(artifact_path: Path, backup_dir: Path, model_version: str) -> Path | None:
@@ -179,6 +191,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Continuously train the NEPSE autonomous model suite on Colab.")
     parser.add_argument("--drive-root", default="/content/drive/MyDrive/nepse-continuous-training")
     parser.add_argument("--mount-drive", action="store_true", help="Mount Google Drive before training.")
+    parser.add_argument(
+        "--device",
+        choices=["cpu", "cuda", "tpu"],
+        default=None,
+        help="Compute device for the PyTorch sequence models. 'tpu' uses torch_xla (Colab TPU runtimes).",
+    )
     parser.add_argument("--profile", choices=["high_level", "advanced"], default="advanced")
     parser.add_argument("--symbol-limit", type=int, default=None)
     parser.add_argument("--market-news-pages", type=int, default=20)

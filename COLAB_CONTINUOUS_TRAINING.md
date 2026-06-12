@@ -1,10 +1,12 @@
 # Google Colab Continuous Training
 
-This notebook flow clones the private repo, refreshes latest NEPSE/public market data, trains with Colab GPU, and stores the trained model in Google Drive.
+This notebook flow clones the private repo, refreshes latest NEPSE/public market data, trains with the Colab TPU v5e-1, and stores the trained model in Google Drive.
+
+The LSTM and TFT sequence models run on the TPU via `torch_xla` (enabled with `--device tpu`). The XGBoost/LightGBM ensemble and PPO agent run on the host CPU — TPUs don't accelerate tree models or stable-baselines3.
 
 ## Fastest Path: Ready-Made Notebook
 
-Upload `notebooks/nepse_colab_training.ipynb` to [colab.research.google.com](https://colab.research.google.com) (File → Upload notebook), switch the runtime to GPU, add the `GITHUB_TOKEN` secret, and run the cells top to bottom. It covers everything in sections 1–5 below.
+Upload `notebooks/nepse_colab_training.ipynb` to [colab.research.google.com](https://colab.research.google.com) (File → Upload notebook), switch the runtime to **v5e-1 TPU** (Runtime → Change runtime type), add the `GITHUB_TOKEN` secret, and run the cells top to bottom. It covers everything in sections 1–5 below.
 
 When training is done, download the artifact from Drive and install it locally with:
 
@@ -47,19 +49,31 @@ git clone https://x-access-token:${GITHUB_TOKEN}@github.com/sulav1234567/nepse.g
 cd /content/nepse-main && git remote set-url origin https://github.com/sulav1234567/nepse.git
 ```
 
-## 3. Install GPU Training Dependencies
+## 3. Install TPU Training Dependencies
 
 ```python
 from google.colab import drive
 drive.mount("/content/drive")
 ```
 
+Do not upgrade `torch` on the TPU runtime — it ships a torch/torch_xla pair that must stay matched.
+
 ```bash
 cd /content/nepse-main
-pip install -U pip
 pip install -r backend/requirements.txt
-pip install -U xgboost lightgbm torch stable-baselines3 gymnasium mlflow
-nvidia-smi
+pip install -U xgboost lightgbm stable-baselines3 gymnasium mlflow
+python -c "import torch_xla" 2>/dev/null || pip install 'torch_xla[tpu]' \
+  -f https://storage.googleapis.com/libtpu-releases/index.html \
+  -f https://storage.googleapis.com/libtpu-wheels/index.html
+```
+
+Verify the TPU is visible:
+
+```python
+import os
+os.environ["PJRT_DEVICE"] = "TPU"
+import torch_xla.core.xla_model as xm
+print(xm.xla_device())
 ```
 
 ## 4. Start Continuous Beast Training
@@ -76,6 +90,7 @@ drive.mount("/content/drive")
 ```bash
 cd /content/nepse-main
 python scripts/colab_continuous_train.py \
+  --device tpu \
   --git-pull \
   --profile advanced \
   --market-news-pages 20 \
@@ -104,6 +119,7 @@ Use this first if you want to verify everything works before a long run:
 ```bash
 cd /content/nepse-main
 python scripts/colab_continuous_train.py \
+  --device tpu \
   --profile advanced \
   --symbol-limit 20 \
   --market-news-pages 2 \
@@ -125,4 +141,4 @@ python scripts/import_colab_model.py
 
 It backs up the current local model, installs the downloaded one at `backend/model_artifacts/autonomous_model_suite.joblib`, and verifies it loads. Restart the backend afterwards. You can also pass an explicit path: `python scripts/import_colab_model.py /path/to/artifact.joblib`.
 
-The PyTorch sequence models train on CUDA in Colab but are moved back to CPU before saving, so the artifact can load on machines without a GPU.
+The PyTorch sequence models train on the TPU (XLA) in Colab but are moved back to CPU before saving, so the artifact loads on machines without a GPU or TPU.

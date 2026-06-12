@@ -1,3 +1,5 @@
+
+
 symbol,company_name,sector,date,open,high,low,close,volume,turnover,change_percent,source,source_url
 ACLBSL,Aarambha Chautari Laghubitta Bittiya Sanstha Limited,Microfinance,2020-07-29,450.0,492.0,450.0,492.0,80.0,38160.0,9.8,SHARESANSAR_PRICE_HISTORY,https://www.sharesansar.com/company/ACLBSL
 ACLBSL,Aarambha Chautari Laghubitta Bittiya Sanstha Limited,Microfinance,2020-07-30,501.0,541.0,501.0,541.0,90.0,47690.0,9.96,SHARESANSAR_PRICE_HISTORY,https://www.sharesansar.com/company/ACLBSL

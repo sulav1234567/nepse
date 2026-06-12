@@ -78,12 +78,35 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return default
 
 
+def _torch_xla_device() -> Any:
+    try:
+        import torch_xla.core.xla_model as xm
+
+        return xm.xla_device()
+    except Exception as exc:
+        logger.warning("TPU requested but torch_xla is unavailable (%s); falling back to CPU.", exc)
+        return None
+
+
 def _torch_device() -> Any:
     if not HAS_TORCH:
         return None
     if os.getenv("NEPSE_FORCE_CPU", "").strip().lower() in {"1", "true", "yes"}:
         return torch.device("cpu")
+    requested = os.getenv("NEPSE_DEVICE", "").strip().lower()
+    if requested in {"tpu", "xla"}:
+        device = _torch_xla_device()
+        return device if device is not None else torch.device("cpu")
+    if requested:
+        return torch.device(requested)
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _sync_xla(device: Any) -> None:
+    if device is not None and getattr(device, "type", "") == "xla":
+        import torch_xla.core.xla_model as xm
+
+        xm.mark_step()
 
 
 def _build_sequences(
@@ -401,6 +424,7 @@ class SequenceLSTMModel(SequenceModelBase):
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     optimizer.step()
+                    _sync_xla(device)
                     epoch_loss += loss.item()
                 scheduler.step()
                 avg_loss = epoch_loss / max(1, len(loader))
@@ -485,6 +509,7 @@ class TemporalFusionStyleModel(SequenceModelBase):
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     optimizer.step()
+                    _sync_xla(device)
                     epoch_loss += loss.item()
                 scheduler.step()
                 avg_loss = epoch_loss / max(1, len(loader))
