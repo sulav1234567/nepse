@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -12,196 +13,221 @@ import {
 } from 'recharts';
 
 import Sidebar from '@/components/Sidebar';
-import { fetchAIPredictions, fetchHealth } from '@/lib/api-client';
+import { ApiPortfolioAudit, fetchPortfolioAudit } from '@/lib/api-client';
 
-const REFRESH_INTERVAL_MS = 60_000;
-
-type HealthResponse = {
-  status: string;
-  version: string;
-  stocks_loaded: number;
-  data_mode: string;
-  ml_trained: boolean;
-  libraries: Record<string, boolean>;
+const SEVERITY_STYLES: Record<string, { color: string; border: string; label: string }> = {
+  critical: { color: '#ff6b5e', border: 'rgba(255,67,54,0.4)', label: 'CRITICAL' },
+  warning: { color: '#fbbf24', border: 'rgba(251,191,36,0.4)', label: 'WARNING' },
+  info: { color: '#93c5fd', border: 'rgba(147,197,253,0.4)', label: 'INFO' },
+  good: { color: '#86efac', border: 'rgba(34,197,94,0.4)', label: 'GOOD' },
 };
 
-type AIPredictionsResponse = {
-  predictions: Array<{
-    symbol: string;
-    riseProbability: number;
-    predictedChangePercent: number;
-    confidence: string;
-  }>;
-  modelMetrics: {
-    accuracy: number;
-    samples: number;
-    features: number;
-    training_time: number;
-    positive_rate?: number;
-  };
-  featureImportance: Array<{
-    feature: string;
-    importance: number;
-  }>;
-};
+function actionColor(action: string): string {
+  if (action.includes('BUY')) return 'var(--bullish)';
+  if (action.includes('SELL')) return 'var(--bearish)';
+  return 'var(--text-secondary)';
+}
+
+function scoreColor(score: number): string {
+  if (score >= 80) return 'var(--bullish)';
+  if (score >= 60) return '#fbbf24';
+  return 'var(--bearish)';
+}
 
 export default function AuditPage() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [aiData, setAiData] = useState<AIPredictionsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [audit, setAudit] = useState<ApiPortfolioAudit | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let isActive = true;
-
-    async function loadAudit() {
-      try {
-        const [healthResponse, aiResponse] = await Promise.all([
-          fetchHealth() as Promise<HealthResponse>,
-          fetchAIPredictions(8) as Promise<AIPredictionsResponse>,
-        ]);
-
-        if (!isActive) {
-          return;
-        }
-
-        setHealth(healthResponse);
-        setAiData(aiResponse);
-        setError(null);
-      } catch (loadError) {
-        if (!isActive) {
-          return;
-        }
-
-        setError(loadError instanceof Error ? loadError.message : 'Unable to load diagnostics.');
-      } finally {
-        if (isActive) {
-          setLoading(false);
-        }
-      }
+  const runAudit = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetchPortfolioAudit();
+      setAudit(response);
+    } catch (auditError) {
+      setError(auditError instanceof Error ? auditError.message : 'Unable to run the portfolio audit.');
+    } finally {
+      setLoading(false);
     }
-
-    loadAudit();
-    const interval = window.setInterval(loadAudit, REFRESH_INTERVAL_MS);
-
-    return () => {
-      isActive = false;
-      window.clearInterval(interval);
-    };
   }, []);
 
-  const topFeatures = aiData?.featureImportance?.slice(0, 8) ?? [];
-  const topPredictions = aiData?.predictions?.slice(0, 5) ?? [];
+  useEffect(() => {
+    runAudit();
+  }, [runAudit]);
+
+  const holdings = audit?.holdings ?? [];
+  const findings = audit?.findings ?? [];
+  const sectors = audit?.sector_exposure ?? [];
 
   return (
     <div className="app-layout">
       <Sidebar />
       <main className="main-content">
         <div className="page-header">
-          <h2>Engine Diagnostics</h2>
-          <div className="subtitle">Live backend health, model training metrics, and current feature influence</div>
+          <h2>Self-Audit</h2>
+          <div className="subtitle">Your Mero Share portfolio, audited by the AI signal engine</div>
           <div className="data-badge live">
             <span className="pulse"></span>
-            backend audit · refresh {REFRESH_INTERVAL_MS / 1000}s
+            {audit ? `${audit.mode.toUpperCase()} portfolio · ${new Date(audit.fetched_at).toLocaleString()}` : 'loading'}
           </div>
         </div>
 
         {error ? (
-          <div className="glass-card" style={{ marginBottom: 24, color: 'var(--bearish)' }}>
-            {error}
-          </div>
+          <div className="glass-card" style={{ marginBottom: 24, color: 'var(--bearish)' }}>{error}</div>
         ) : null}
 
-        <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(5, 1fr)', marginBottom: 24 }}>
-          <div className="stat-card">
-            <div className="stat-label">Service Status</div>
-            <div className="stat-value" style={{ color: 'var(--bullish)' }}>{health?.status ?? '--'}</div>
-            <div className="stat-change">{health?.version ?? '--'}</div>
+        <div className="dashboard-grid grid-2" style={{ gridTemplateColumns: '320px 1fr', marginBottom: 24 }}>
+          <div className="glass-card" style={{ textAlign: 'center' }}>
+            <div className="glass-card-title" style={{ marginBottom: 12 }}>Portfolio Health</div>
+            <div style={{ fontSize: '4rem', fontWeight: 800, color: scoreColor(audit?.health_score ?? 0) }}>
+              {loading ? '…' : audit?.health_score ?? '--'}
+            </div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 16 }}>out of 100</div>
+            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              {audit?.summary ?? 'Running audit…'}
+            </div>
+            <button
+              onClick={runAudit}
+              disabled={loading}
+              style={{
+                marginTop: 18,
+                padding: '0.6rem 1.4rem',
+                borderRadius: '0.5rem',
+                border: '1px solid rgba(99,102,241,0.5)',
+                background: 'rgba(99,102,241,0.15)',
+                color: '#a5b4fc',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+              }}
+            >
+              {loading ? 'Auditing…' : 'Re-run Audit'}
+            </button>
           </div>
-          <div className="stat-card">
-            <div className="stat-label">Stocks Loaded</div>
-            <div className="stat-value">{health?.stocks_loaded ?? '--'}</div>
-            <div className="stat-change">{health?.data_mode ?? '--'}</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">Model Accuracy</div>
-            <div className="stat-value">{aiData?.modelMetrics?.accuracy?.toFixed(1) ?? '--'}%</div>
-            <div className="stat-change">{aiData?.modelMetrics?.samples ?? '--'} samples</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">Features Used</div>
-            <div className="stat-value">{aiData?.modelMetrics?.features ?? '--'}</div>
-            <div className="stat-change">Current ensemble inputs</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">Training Time</div>
-            <div className="stat-value">{aiData?.modelMetrics?.training_time?.toFixed(2) ?? '--'}s</div>
-            <div className="stat-change">{health?.ml_trained ? 'trained' : 'waiting'}</div>
+
+          <div>
+            <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)', marginBottom: 16 }}>
+              <div className="stat-card">
+                <div className="stat-label">Holdings Value</div>
+                <div className="stat-value">Rs. {audit?.totals.value?.toLocaleString() ?? '--'}</div>
+                <div className="stat-change">{holdings.length} holdings</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Unrealized Gain</div>
+                <div className="stat-value" style={{ color: (audit?.totals.gain ?? 0) >= 0 ? 'var(--bullish)' : 'var(--bearish)' }}>
+                  {audit ? `${audit.totals.gain >= 0 ? '+' : ''}${audit.totals.gain_pct.toFixed(2)}%` : '--'}
+                </div>
+                <div className="stat-change">Rs. {audit?.totals.gain?.toLocaleString() ?? '--'}</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Idle Cash</div>
+                <div className="stat-value">Rs. {audit?.totals.cash?.toLocaleString() ?? '--'}</div>
+                <div className="stat-change">uninvested</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Findings</div>
+                <div className="stat-value">{findings.filter((f) => f.severity === 'critical' || f.severity === 'warning').length}</div>
+                <div className="stat-change">need attention</div>
+              </div>
+            </div>
+
+            <div className="glass-card">
+              <div className="glass-card-header">
+                <div className="glass-card-title">Sector Exposure</div>
+              </div>
+              <div style={{ height: 180 }}>
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={1}>
+                  <BarChart data={sectors} layout="vertical">
+                    <CartesianGrid horizontal={false} stroke="rgba(255,255,255,0.04)" />
+                    <XAxis type="number" unit="%" stroke="rgba(255,255,255,0.1)" tick={{ fill: '#5a6580', fontSize: 10 }} />
+                    <YAxis type="category" dataKey="sector" width={140} stroke="rgba(255,255,255,0.1)" tick={{ fill: '#8b95b0', fontSize: 10 }} />
+                    <Tooltip contentStyle={{ background: '#141b2d', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }} />
+                    <Bar dataKey="weight_pct" radius={[0, 4, 4, 0]}>
+                      {sectors.map((s) => (
+                        <Cell key={s.sector} fill={s.weight_pct > 50 ? '#f87171' : '#6366f1'} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div className="dashboard-grid grid-2" style={{ marginBottom: 24 }}>
-          <div className="glass-card">
-            <div className="glass-card-header">
-              <div className="glass-card-title">Top Feature Importance</div>
-            </div>
-            <div style={{ height: 280 }}>
-              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={1}>
-                <BarChart data={topFeatures} layout="vertical">
-                  <CartesianGrid horizontal={false} stroke="rgba(255,255,255,0.04)" />
-                  <XAxis type="number" stroke="rgba(255,255,255,0.1)" tick={{ fill: '#5a6580', fontSize: 10 }} />
-                  <YAxis type="category" dataKey="feature" width={120} stroke="rgba(255,255,255,0.1)" tick={{ fill: '#8b95b0', fontSize: 10 }} />
-                  <Tooltip contentStyle={{ background: '#141b2d', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }} />
-                  <Bar dataKey="importance" fill="#6366f1" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+        <div className="glass-card" style={{ marginBottom: 24 }}>
+          <div className="glass-card-header">
+            <div className="glass-card-title">AI Findings</div>
           </div>
-
-          <div className="glass-card">
-            <div className="glass-card-header">
-              <div className="glass-card-title">Current AI Leaders</div>
+          {findings.length === 0 ? (
+            <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              {loading ? 'Analyzing your portfolio…' : 'No findings — connect Mero Share on the Broker Trading page to audit a live portfolio.'}
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {loading ? (
-                Array.from({ length: 5 }).map((_, rowIndex) => (
-                  <div key={rowIndex} className="loading-skeleton" style={{ height: 56, borderRadius: 10 }} />
-                ))
-              ) : (
-                topPredictions.map((prediction) => (
-                  <div key={prediction.symbol} style={{ padding: '0.85rem 1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '0.75rem', border: '1px solid var(--glass-border)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <div style={{ fontSize: '1rem', fontWeight: 700 }}>{prediction.symbol}</div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                          {prediction.confidence} confidence · {prediction.predictedChangePercent >= 0 ? '+' : ''}{prediction.predictedChangePercent.toFixed(2)}%
-                        </div>
-                      </div>
-                      <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--bullish)' }}>
-                        {prediction.riseProbability.toFixed(1)}%
-                      </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {findings.map((finding, index) => {
+                const style = SEVERITY_STYLES[finding.severity] ?? SEVERITY_STYLES.info;
+                return (
+                  <div key={index} style={{ padding: '0.85rem 1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '0.75rem', border: `1px solid ${style.border}` }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                      <span style={{ fontSize: '0.65rem', fontWeight: 800, color: style.color, letterSpacing: '0.8px' }}>{style.label}</span>
+                      <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{finding.title}</span>
                     </div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{finding.detail}</div>
                   </div>
-                ))
-              )}
+                );
+              })}
             </div>
-          </div>
+          )}
         </div>
 
         <div className="glass-card">
           <div className="glass-card-header">
-            <div className="glass-card-title">Library Readiness</div>
+            <div className="glass-card-title">Holdings — AI Verdicts</div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
-            {Object.entries(health?.libraries ?? {}).map(([library, ready]) => (
-              <div key={library} style={{ padding: '0.9rem 1rem', background: 'rgba(255,255,255,0.02)', borderRadius: '0.75rem', border: '1px solid var(--glass-border)' }}>
-                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 6 }}>{library}</div>
-                <div style={{ fontSize: '1rem', fontWeight: 700, color: ready ? 'var(--bullish)' : 'var(--bearish)' }}>
-                  {ready ? 'READY' : 'OFFLINE'}
-                </div>
-              </div>
-            ))}
-          </div>
+          {holdings.length === 0 ? (
+            <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+              No holdings found{audit ? ` in ${audit.mode} mode` : ''}. Connect Mero Share or place paper trades first.
+            </div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: 'var(--text-muted)', fontSize: '0.72rem', textTransform: 'uppercase' }}>
+                    <th style={{ padding: '0.5rem 0.75rem' }}>Symbol</th>
+                    <th style={{ padding: '0.5rem 0.75rem' }}>Weight</th>
+                    <th style={{ padding: '0.5rem 0.75rem' }}>Units</th>
+                    <th style={{ padding: '0.5rem 0.75rem' }}>P&L</th>
+                    <th style={{ padding: '0.5rem 0.75rem' }}>AI Verdict</th>
+                    <th style={{ padding: '0.5rem 0.75rem' }}>Rise Prob.</th>
+                    <th style={{ padding: '0.5rem 0.75rem' }}>FCS</th>
+                    <th style={{ padding: '0.5rem 0.75rem' }}>AI Reasoning</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {holdings.map((h) => (
+                    <tr key={h.symbol} style={{ borderTop: '1px solid var(--glass-border)' }}>
+                      <td style={{ padding: '0.6rem 0.75rem' }}>
+                        <div style={{ fontWeight: 700 }}>{h.symbol}</div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{h.sector}</div>
+                      </td>
+                      <td style={{ padding: '0.6rem 0.75rem' }}>{h.weight_pct?.toFixed(1)}%</td>
+                      <td style={{ padding: '0.6rem 0.75rem' }}>{h.units}</td>
+                      <td style={{ padding: '0.6rem 0.75rem', color: h.unrealized_gain_pct >= 0 ? 'var(--bullish)' : 'var(--bearish)' }}>
+                        {h.unrealized_gain_pct >= 0 ? '+' : ''}{h.unrealized_gain_pct?.toFixed(2)}%
+                      </td>
+                      <td style={{ padding: '0.6rem 0.75rem', fontWeight: 700, color: actionColor(h.ai_action) }}>{h.ai_action}</td>
+                      <td style={{ padding: '0.6rem 0.75rem' }}>{h.rise_probability != null ? `${h.rise_probability.toFixed(1)}%` : '--'}</td>
+                      <td style={{ padding: '0.6rem 0.75rem' }}>{h.fcs_score != null ? h.fcs_score.toFixed(0) : '--'}</td>
+                      <td style={{ padding: '0.6rem 0.75rem', fontSize: '0.75rem', color: 'var(--text-secondary)', maxWidth: 320 }}>
+                        {h.ai_reasoning}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </main>
     </div>

@@ -133,6 +133,14 @@ export default function Sidebar() {
           Portfolio Optimizer
         </Link>
 
+        <div className="sidebar-section-label">Trading</div>
+        <Link href="/trader" className={isActive('/trader')}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="1" x2="12" y2="23" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+          </svg>
+          Broker Trading
+        </Link>
+
         <div className="sidebar-section-label">System</div>
         <Link href="/audit" className={isActive('/audit')}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

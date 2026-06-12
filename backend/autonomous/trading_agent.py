@@ -735,6 +735,171 @@ class AutonomousTradingAgent:
             for i, s in enumerate(signals[:top_n])
         ]
 
+    def audit_portfolio(self) -> dict[str, Any]:
+        """
+        Fetch the Mero Share portfolio and audit it with the AI signal engine.
+
+        Each holding gets the model's current verdict (action, rise probability,
+        FCS score) plus rule-based findings: concentration, sector exposure,
+        unrealized P&L outliers, and model disagreement with what is held.
+        """
+        portfolio = self.broker.get_portfolio()
+        cash = self.broker.get_cash_balance()
+        fetched_at = portfolio.fetched_at or datetime.now().isoformat()
+
+        if not portfolio.holdings:
+            return {
+                "fetched_at": fetched_at,
+                "mode": self._status.mode,
+                "health_score": 0,
+                "summary": "No holdings found in the portfolio. Connect Mero Share or place trades first.",
+                "totals": {"value": 0.0, "cost": 0.0, "gain": 0.0, "gain_pct": 0.0, "cash": cash},
+                "holdings": [],
+                "findings": [],
+                "sector_exposure": [],
+            }
+
+        signals = {s.symbol: s for s in self.scan_market()}
+
+        audited: list[dict[str, Any]] = []
+        total_value = 0.0
+        for h in portfolio.holdings:
+            sig = signals.get(h.symbol)
+            price = (sig.cmp if sig else 0.0) or h.ltp or h.wacc
+            value = h.units * price
+            total_value += value
+            audited.append({
+                "symbol": h.symbol,
+                "company_name": h.company_name,
+                "units": h.units,
+                "wacc": h.wacc,
+                "ltp": price,
+                "value": round(value, 2),
+                "unrealized_gain": h.unrealized_gain,
+                "unrealized_gain_pct": h.unrealized_gain_pct,
+                "sector": sig.sector if sig else "Unknown",
+                "ai_action": sig.action if sig else "NO DATA",
+                "rise_probability": sig.rise_probability if sig else None,
+                "fcs_score": sig.fcs_score if sig else None,
+                "stop_loss": sig.stop_loss if sig else None,
+                "target_1": sig.target_1 if sig else None,
+                "ai_reasoning": sig.reasoning if sig else "No live signal available for this symbol.",
+            })
+
+        for item in audited:
+            item["weight_pct"] = round(item["value"] / total_value * 100, 2) if total_value > 0 else 0.0
+
+        sector_value: dict[str, float] = {}
+        for item in audited:
+            sector_value[item["sector"]] = sector_value.get(item["sector"], 0.0) + item["value"]
+        sector_exposure = sorted(
+            (
+                {"sector": sec, "value": round(val, 2), "weight_pct": round(val / total_value * 100, 2) if total_value > 0 else 0.0}
+                for sec, val in sector_value.items()
+            ),
+            key=lambda s: s["value"],
+            reverse=True,
+        )
+
+        findings: list[dict[str, str]] = []
+        score = 100.0
+
+        for item in audited:
+            if item["weight_pct"] > 30:
+                findings.append({
+                    "severity": "critical",
+                    "title": f"{item['symbol']} is {item['weight_pct']:.0f}% of the portfolio",
+                    "detail": "A single stock above 30% exposes the portfolio to company-specific risk. Consider trimming.",
+                })
+                score -= 12
+            elif item["weight_pct"] > 20:
+                findings.append({
+                    "severity": "warning",
+                    "title": f"{item['symbol']} is {item['weight_pct']:.0f}% of the portfolio",
+                    "detail": "Above 20% in one stock is aggressive. Watch this position closely.",
+                })
+                score -= 6
+
+            if item["ai_action"] in {"SELL", "STRONG SELL"}:
+                findings.append({
+                    "severity": "warning",
+                    "title": f"Model rates {item['symbol']} a {item['ai_action']}",
+                    "detail": item["ai_reasoning"] or "The model expects this holding to underperform.",
+                })
+                score -= 6
+            if item["unrealized_gain_pct"] < -15:
+                findings.append({
+                    "severity": "critical",
+                    "title": f"{item['symbol']} is down {abs(item['unrealized_gain_pct']):.1f}%",
+                    "detail": "Large unrealized loss. Decide deliberately: average down, hold, or cut — don't drift.",
+                })
+                score -= 8
+            elif item["unrealized_gain_pct"] > 25 and item["ai_action"] not in {"BUY", "STRONG BUY"}:
+                findings.append({
+                    "severity": "info",
+                    "title": f"{item['symbol']} is up {item['unrealized_gain_pct']:.1f}% and the model no longer rates it a buy",
+                    "detail": "Consider booking partial profit or tightening the stop.",
+                })
+                score -= 2
+
+        if sector_exposure and sector_exposure[0]["weight_pct"] > 50 and sector_exposure[0]["sector"] != "Unknown":
+            findings.append({
+                "severity": "warning",
+                "title": f"{sector_exposure[0]['sector']} sector is {sector_exposure[0]['weight_pct']:.0f}% of the portfolio",
+                "detail": "Heavy sector concentration: one regulatory or sector-wide shock hits most of the portfolio.",
+            })
+            score -= 8
+
+        if len(audited) < 3:
+            findings.append({
+                "severity": "warning",
+                "title": f"Only {len(audited)} holding(s)",
+                "detail": "Fewer than 3 holdings gives little diversification benefit.",
+            })
+            score -= 8
+
+        portfolio_total = total_value + cash
+        if portfolio_total > 0 and cash / portfolio_total > 0.5:
+            findings.append({
+                "severity": "info",
+                "title": f"{cash / portfolio_total * 100:.0f}% of capital is idle cash",
+                "detail": "Large idle cash drags returns. Deploy gradually into model-rated buys if conviction allows.",
+            })
+            score -= 3
+
+        buys = sum(1 for i in audited if i["ai_action"] in {"BUY", "STRONG BUY"})
+        if audited and buys >= max(1, len(audited) // 2):
+            findings.append({
+                "severity": "good",
+                "title": f"Model still rates {buys} of {len(audited)} holdings a buy",
+                "detail": "The portfolio is broadly aligned with the model's current view.",
+            })
+
+        score = max(0.0, min(100.0, score))
+        if score >= 80:
+            summary = "Healthy portfolio. Keep positions aligned with the model and review concentration monthly."
+        elif score >= 60:
+            summary = "Reasonable portfolio with a few issues worth fixing — see the findings below."
+        else:
+            summary = "The portfolio needs attention: concentration, losses, or model-disagreement flags are stacking up."
+
+        return {
+            "fetched_at": fetched_at,
+            "mode": self._status.mode,
+            "health_score": round(score),
+            "summary": summary,
+            "totals": {
+                "value": round(total_value, 2),
+                "cost": portfolio.total_cost,
+                "gain": portfolio.total_gain,
+                "gain_pct": portfolio.total_gain_pct,
+                "cash": cash,
+            },
+            "holdings": sorted(audited, key=lambda i: i["value"], reverse=True),
+            "findings": findings,
+            "sector_exposure": sector_exposure,
+        }
+
 
 # ─── Singleton ────────────────────────────────────────────────────────────────
 

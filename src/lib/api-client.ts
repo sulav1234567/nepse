@@ -779,3 +779,122 @@ export async function fetchTraderRecommendations(topN: number = 10): Promise<Api
 export async function runTraderCycle(): Promise<{ message: string; mode: string }> {
   return postJson<{ message: string; mode: string }>('/api/autonomous/trader/run');
 }
+
+// ─── Broker (Mero Share + TMS) ───────────────────────────────────────────────
+
+export interface ApiBrokerConnectRequest {
+  mero_share_client_id?: string;
+  mero_share_password?: string;
+  tms_url?: string;
+  tms_username?: string;
+  tms_password?: string;
+  tms_pin?: string;
+  paper_mode: boolean;
+}
+
+export interface ApiBrokerConnectResponse {
+  connected: boolean;
+  mode: string;
+  message: string;
+}
+
+export interface ApiBrokerHolding {
+  symbol: string;
+  company_name: string;
+  units: number;
+  ltp: number;
+  wacc: number;
+  unrealized_gain: number;
+  unrealized_gain_pct: number;
+}
+
+export interface ApiBrokerPortfolio {
+  holdings: ApiBrokerHolding[];
+  total_value: number;
+  total_cost: number;
+  total_gain: number;
+  total_gain_pct: number;
+  cash_balance: number;
+  fetched_at: string;
+}
+
+export interface ApiTradeRecord {
+  trade_id: string;
+  symbol: string;
+  action: string;
+  quantity: number;
+  price: number;
+  total_amount: number;
+  status: string;
+  timestamp: string;
+  order_id: string | null;
+  notes: string;
+}
+
+export async function connectBroker(req: ApiBrokerConnectRequest): Promise<ApiBrokerConnectResponse> {
+  return postJson<ApiBrokerConnectResponse>('/api/autonomous/trader/connect', req);
+}
+
+export async function fetchTraderPortfolio(): Promise<ApiBrokerPortfolio> {
+  return fetchJson<ApiBrokerPortfolio>('/api/autonomous/trader/portfolio');
+}
+
+export async function fetchTraderPositions(): Promise<ApiTraderPosition[]> {
+  return fetchJson<ApiTraderPosition[]>('/api/autonomous/trader/positions');
+}
+
+export async function fetchTraderTrades(): Promise<ApiTradeRecord[]> {
+  return fetchJson<ApiTradeRecord[]>('/api/autonomous/trader/trades');
+}
+
+export async function placeManualTrade(req: {
+  symbol: string;
+  action: 'BUY' | 'SELL';
+  quantity: number;
+  price: number;
+  notes?: string;
+}): Promise<ApiTradeRecord> {
+  return postJson<ApiTradeRecord>('/api/autonomous/trader/manual-trade', req);
+}
+
+export async function forceExitPosition(symbol: string, reason?: string): Promise<{ message: string; success: boolean }> {
+  return postJson<{ message: string; success: boolean }>('/api/autonomous/trader/exit', {
+    symbol,
+    reason: reason ?? 'Manual exit via UI',
+  });
+}
+
+// ─── Portfolio Self-Audit ────────────────────────────────────────────────────
+
+export interface ApiAuditHolding extends ApiBrokerHolding {
+  value: number;
+  weight_pct: number;
+  sector: string;
+  ai_action: string;
+  rise_probability: number | null;
+  fcs_score: number | null;
+  stop_loss: number | null;
+  target_1: number | null;
+  ai_reasoning: string;
+}
+
+export interface ApiAuditFinding {
+  severity: 'good' | 'info' | 'warning' | 'critical';
+  title: string;
+  detail: string;
+}
+
+export interface ApiPortfolioAudit {
+  fetched_at: string;
+  mode: string;
+  health_score: number;
+  summary: string;
+  totals: { value: number; cost: number; gain: number; gain_pct: number; cash: number };
+  holdings: ApiAuditHolding[];
+  findings: ApiAuditFinding[];
+  sector_exposure: Array<{ sector: string; value: number; weight_pct: number }>;
+}
+
+export async function fetchPortfolioAudit(): Promise<ApiPortfolioAudit> {
+  return fetchJson<ApiPortfolioAudit>('/api/autonomous/trader/audit');
+}

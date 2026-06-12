@@ -24,7 +24,7 @@ npm run dev
 
 ### Option 2: Detailed Setup
 
-See [QUICK_START.md](QUICK_START.md) or [SETUP.md](SETUP.md) for complete instructions.
+See [SETUP.md](SETUP.md) for complete instructions.
 
 ## ✨ What You'll See
 
@@ -72,9 +72,9 @@ The repo also includes an autonomous research subsystem with Timescale-ready sto
 
 ## 📚 Documentation
 
-- **[QUICK_START.md](QUICK_START.md)** - Get running in 5 minutes
 - **[SETUP.md](SETUP.md)** - Detailed setup guide
-- **[BACKEND_FIXES_SUMMARY.md](BACKEND_FIXES_SUMMARY.md)** - Technical changelog
+- **[COLAB_CONTINUOUS_TRAINING.md](COLAB_CONTINUOUS_TRAINING.md)** - Train the model on Google Colab
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Production deployment
 
 ## 🔗 API Endpoints
 

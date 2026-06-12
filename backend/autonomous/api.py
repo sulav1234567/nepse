@@ -266,3 +266,13 @@ def trader_trade_history(agent: AutonomousTradingAgent = Depends(get_trading_age
     """Get all trades (paper or live) placed by the agent."""
     from dataclasses import asdict
     return [asdict(t) for t in agent.broker.get_trade_history()]
+
+
+@router.get("/trader/audit")
+def trader_portfolio_audit(agent: AutonomousTradingAgent = Depends(get_trading_agent)) -> dict[str, Any]:
+    """Fetch the Mero Share portfolio and audit it with the AI signal engine."""
+    try:
+        return agent.audit_portfolio()
+    except Exception as exc:
+        logger.error("Portfolio audit error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
