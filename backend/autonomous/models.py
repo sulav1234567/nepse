@@ -355,7 +355,34 @@ class SequenceModelBase:
         raise NotImplementedError
 
     def predict_frame(self, frame: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
-        raise NotImplementedError
+        result = pd.DataFrame(index=frame.index)
+        for horizon in HORIZONS:
+            result[f"{self.output_prefix}_return_{horizon}d"] = 0.0
+        if not self.is_trained or len(frame) <= self.sequence_length:
+            return result
+        sequences, row_indices = self._prepare_prediction_sequences(frame, feature_cols)
+        if len(sequences) == 0:
+            return result
+        if HAS_TORCH:
+            device = _torch_device()
+            self.model.to(device)
+            self.model.eval()
+            # Predict in chunks: a single forward pass over the full history
+            # allocates activations for every sequence at once and OOMs the GPU.
+            batch_size = _env_int("NEPSE_INFERENCE_BATCH_SIZE", 1024)
+            predicted_batches = []
+            with torch.no_grad():
+                for start in range(0, len(sequences), batch_size):
+                    batch = torch.as_tensor(
+                        sequences[start : start + batch_size], dtype=torch.float32, device=device
+                    )
+                    predicted_batches.append(self.model(batch).detach().cpu().numpy())
+            predicted = np.concatenate(predicted_batches, axis=0)
+        else:
+            predicted = self.model.predict(sequences.reshape(len(sequences), -1))
+        for horizon_index, horizon in enumerate(HORIZONS):
+            result.loc[result.index[row_indices], f"{self.output_prefix}_return_{horizon}d"] = predicted[:, horizon_index]
+        return result
 
     def predict_latest(self, frame: pd.DataFrame, feature_cols: list[str]) -> BaseModelPrediction:
         returns = {horizon: 0.0 for horizon in HORIZONS}
@@ -444,28 +471,6 @@ class SequenceLSTMModel(SequenceModelBase):
             self.model.fit(flattened, targets)
         self.is_trained = True
 
-    def predict_frame(self, frame: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
-        result = pd.DataFrame(index=frame.index)
-        for horizon in HORIZONS:
-            result[f"{self.output_prefix}_return_{horizon}d"] = 0.0
-        if not self.is_trained or len(frame) <= self.sequence_length:
-            return result
-        sequences, row_indices = self._prepare_prediction_sequences(frame, feature_cols)
-        if len(sequences) == 0:
-            return result
-        if HAS_TORCH:
-            device = _torch_device()
-            self.model.to(device)
-            self.model.eval()
-            with torch.no_grad():
-                sequence_tensor = torch.as_tensor(sequences, dtype=torch.float32, device=device)
-                predicted = self.model(sequence_tensor).detach().cpu().numpy()
-        else:
-            predicted = self.model.predict(sequences.reshape(len(sequences), -1))
-        for horizon_index, horizon in enumerate(HORIZONS):
-            result.loc[result.index[row_indices], f"{self.output_prefix}_return_{horizon}d"] = predicted[:, horizon_index]
-        return result
-
 
 class TemporalFusionStyleModel(SequenceModelBase):
     name = "Temporal Fusion Transformer"
@@ -528,28 +533,6 @@ class TemporalFusionStyleModel(SequenceModelBase):
             self.model = RandomForestRegressor(n_estimators=60, random_state=42, n_jobs=-1)
             self.model.fit(flattened, targets)
         self.is_trained = True
-
-    def predict_frame(self, frame: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
-        result = pd.DataFrame(index=frame.index)
-        for horizon in HORIZONS:
-            result[f"{self.output_prefix}_return_{horizon}d"] = 0.0
-        if not self.is_trained or len(frame) <= self.sequence_length:
-            return result
-        sequences, row_indices = self._prepare_prediction_sequences(frame, feature_cols)
-        if len(sequences) == 0:
-            return result
-        if HAS_TORCH:
-            device = _torch_device()
-            self.model.to(device)
-            self.model.eval()
-            with torch.no_grad():
-                sequence_tensor = torch.as_tensor(sequences, dtype=torch.float32, device=device)
-                predicted = self.model(sequence_tensor).detach().cpu().numpy()
-        else:
-            predicted = self.model.predict(sequences.reshape(len(sequences), -1))
-        for horizon_index, horizon in enumerate(HORIZONS):
-            result.loc[result.index[row_indices], f"{self.output_prefix}_return_{horizon}d"] = predicted[:, horizon_index]
-        return result
 
 
 class ReinforcementLearningStrategyModel:
