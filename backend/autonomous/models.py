@@ -97,6 +97,9 @@ def _torch_device() -> Any:
     if requested in {"tpu", "xla"}:
         device = _torch_xla_device()
         return device if device is not None else torch.device("cpu")
+    if requested == "cuda" and not torch.cuda.is_available():
+        logger.warning("CUDA requested but no GPU is available; falling back to CPU.")
+        return torch.device("cpu")
     if requested:
         return torch.device(requested)
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")

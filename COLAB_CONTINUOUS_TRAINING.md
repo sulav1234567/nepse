@@ -1,12 +1,12 @@
 # Google Colab Continuous Training
 
-This notebook flow clones the private repo, refreshes latest NEPSE/public market data, trains with the Colab TPU v5e-1, and stores the trained model in Google Drive.
+This notebook flow clones the private repo, refreshes latest NEPSE/public market data, trains with a Colab GPU, and stores the trained model in Google Drive.
 
-The LSTM and TFT sequence models run on the TPU via `torch_xla` (enabled with `--device tpu`). The XGBoost/LightGBM ensemble and PPO agent run on the host CPU — TPUs don't accelerate tree models or stable-baselines3.
+**GPU is the recommended runtime.** A TPU (v5e-1) is also supported via `--device tpu`, but it only accelerates the LSTM/TFT sequence models, and the training loop's per-batch loss reads force frequent TPU syncs that erase most of the gain. The GPU runs the sequence models natively with no such penalty. The XGBoost/LightGBM ensemble and PPO agent run on the host CPU on either runtime.
 
 ## Fastest Path: Ready-Made Notebook
 
-Upload `notebooks/nepse_colab_training.ipynb` to [colab.research.google.com](https://colab.research.google.com) (File → Upload notebook), switch the runtime to **v5e-1 TPU** (Runtime → Change runtime type), add the `GITHUB_TOKEN` secret, and run the cells top to bottom. It covers everything in sections 1–5 below.
+Upload `notebooks/nepse_colab_training.ipynb` to [colab.research.google.com](https://colab.research.google.com) (File → Upload notebook), switch the runtime to **T4 GPU** (Runtime → Change runtime type), add the `GITHUB_TOKEN` secret, and run the cells top to bottom. It covers everything in sections 1–5 below.
 
 When training is done, download the artifact from Drive and install it locally with:
 
@@ -49,31 +49,20 @@ git clone https://x-access-token:${GITHUB_TOKEN}@github.com/sulav1234567/nepse.g
 cd /content/nepse-main && git remote set-url origin https://github.com/sulav1234567/nepse.git
 ```
 
-## 3. Install TPU Training Dependencies
+## 3. Install Training Dependencies
 
 ```python
 from google.colab import drive
 drive.mount("/content/drive")
 ```
 
-Do not upgrade `torch` on the TPU runtime — it ships a torch/torch_xla pair that must stay matched.
+The runtime's preinstalled CUDA build of torch is kept as-is (don't `pip install -U torch`).
 
 ```bash
 cd /content/nepse-main
 pip install -r backend/requirements.txt
 pip install -U xgboost lightgbm stable-baselines3 gymnasium mlflow
-python -c "import torch_xla" 2>/dev/null || pip install 'torch_xla[tpu]' \
-  -f https://storage.googleapis.com/libtpu-releases/index.html \
-  -f https://storage.googleapis.com/libtpu-wheels/index.html
-```
-
-Verify the TPU is visible:
-
-```python
-import os
-os.environ["PJRT_DEVICE"] = "TPU"
-import torch_xla.core.xla_model as xm
-print(xm.xla_device())
+nvidia-smi
 ```
 
 ## 4. Start Continuous Beast Training
@@ -90,7 +79,7 @@ drive.mount("/content/drive")
 ```bash
 cd /content/nepse-main
 python scripts/colab_continuous_train.py \
-  --device tpu \
+  --device cuda \
   --git-pull \
   --profile advanced \
   --market-news-pages 20 \
@@ -119,7 +108,7 @@ Use this first if you want to verify everything works before a long run:
 ```bash
 cd /content/nepse-main
 python scripts/colab_continuous_train.py \
-  --device tpu \
+  --device cuda \
   --profile advanced \
   --symbol-limit 20 \
   --market-news-pages 2 \
@@ -141,4 +130,8 @@ python scripts/import_colab_model.py
 
 It backs up the current local model, installs the downloaded one at `backend/model_artifacts/autonomous_model_suite.joblib`, and verifies it loads. Restart the backend afterwards. You can also pass an explicit path: `python scripts/import_colab_model.py /path/to/artifact.joblib`.
 
-The PyTorch sequence models train on the TPU (XLA) in Colab but are moved back to CPU before saving, so the artifact loads on machines without a GPU or TPU.
+The PyTorch sequence models train on the GPU in Colab but are moved back to CPU before saving, so the artifact loads on machines without a GPU.
+
+## Optional: TPU Runtime
+
+If a GPU is unavailable, the v5e-1 TPU runtime works too: keep the runtime's matched torch/torch_xla pair (never upgrade torch there), and pass `--device tpu` instead of `--device cuda`. Expect it to be slower than the T4 for this workload.
