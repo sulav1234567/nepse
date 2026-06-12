@@ -2,6 +2,18 @@
 
 This notebook flow clones the private repo, refreshes latest NEPSE/public market data, trains with Colab GPU, and stores the trained model in Google Drive.
 
+## Fastest Path: Ready-Made Notebook
+
+Upload `notebooks/nepse_colab_training.ipynb` to [colab.research.google.com](https://colab.research.google.com) (File → Upload notebook), switch the runtime to GPU, add the `GITHUB_TOKEN` secret, and run the cells top to bottom. It covers everything in sections 1–5 below.
+
+When training is done, download the artifact from Drive and install it locally with:
+
+```bash
+python scripts/import_colab_model.py
+```
+
+The manual steps below are the same flow, cell by cell.
+
 ## 1. Add GitHub Token To Colab
 
 Create a GitHub fine-grained token with read access to the private repo:
@@ -54,10 +66,16 @@ nvidia-smi
 
 This runs forever until Colab disconnects. It saves the latest artifact to Google Drive every cycle.
 
+Mount Drive in a normal Python notebook cell first:
+
+```python
+from google.colab import drive
+drive.mount("/content/drive")
+```
+
 ```bash
 cd /content/nepse-main
 python scripts/colab_continuous_train.py \
-  --mount-drive \
   --git-pull \
   --profile advanced \
   --market-news-pages 20 \
@@ -86,7 +104,6 @@ Use this first if you want to verify everything works before a long run:
 ```bash
 cd /content/nepse-main
 python scripts/colab_continuous_train.py \
-  --mount-drive \
   --profile advanced \
   --symbol-limit 20 \
   --market-news-pages 2 \
@@ -100,10 +117,12 @@ python scripts/colab_continuous_train.py \
 
 ## 6. Use The Trained Artifact Locally
 
-Download or copy this file from Drive into the app:
+Download `autonomous_model_suite_latest.joblib` from Drive (`MyDrive/nepse-continuous-training/artifact_backups/`) into `~/Downloads`, then run:
 
-```text
-backend/model_artifacts/autonomous_model_suite.joblib
+```bash
+python scripts/import_colab_model.py
 ```
+
+It backs up the current local model, installs the downloaded one at `backend/model_artifacts/autonomous_model_suite.joblib`, and verifies it loads. Restart the backend afterwards. You can also pass an explicit path: `python scripts/import_colab_model.py /path/to/artifact.joblib`.
 
 The PyTorch sequence models train on CUDA in Colab but are moved back to CPU before saving, so the artifact can load on machines without a GPU.

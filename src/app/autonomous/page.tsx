@@ -1,13 +1,18 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import Sidebar from '@/components/Sidebar';
 import {
   ApiAutonomousDashboardResponse,
   ApiAutonomousSignalCard,
+  ApiTraderRecommendation,
+  ApiTraderStatus,
   fetchAutonomousDashboard,
+  fetchTraderRecommendations,
+  fetchTraderStatus,
+  runTraderCycle,
 } from '@/lib/api-client';
 import { useAuth } from '@/lib/auth-context';
 
@@ -104,6 +109,177 @@ function SignalMiniCard({ card }: { card: ApiAutonomousSignalCard }) {
           </span>
         ))}
       </div>
+    </div>
+  );
+}
+
+function TradingAgentPanel() {
+  const [status, setStatus] = useState<ApiTraderStatus | null>(null);
+  const [recommendations, setRecommendations] = useState<ApiTraderRecommendation[]>([]);
+  const [recsLoading, setRecsLoading] = useState(false);
+  const [runMessage, setRunMessage] = useState<string | null>(null);
+  const [agentError, setAgentError] = useState<string | null>(null);
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const response = await fetchTraderStatus();
+      setStatus(response);
+      setAgentError(null);
+    } catch (loadError) {
+      setAgentError(loadError instanceof Error ? loadError.message : 'Unable to load agent status.');
+    }
+  }, []);
+
+  useEffect(() => {
+    loadStatus();
+    const interval = window.setInterval(loadStatus, 30_000);
+    return () => window.clearInterval(interval);
+  }, [loadStatus]);
+
+  const handleLoadRecommendations = async () => {
+    setRecsLoading(true);
+    setAgentError(null);
+    try {
+      const response = await fetchTraderRecommendations(10);
+      setRecommendations(response);
+    } catch (loadError) {
+      setAgentError(loadError instanceof Error ? loadError.message : 'Unable to load recommendations.');
+    } finally {
+      setRecsLoading(false);
+    }
+  };
+
+  const handleRunCycle = async () => {
+    setRunMessage(null);
+    setAgentError(null);
+    try {
+      const response = await runTraderCycle();
+      setRunMessage(`${response.message} (${response.mode} mode)`);
+      window.setTimeout(loadStatus, 4000);
+    } catch (runError) {
+      setAgentError(runError instanceof Error ? runError.message : 'Unable to start agent cycle.');
+    }
+  };
+
+  return (
+    <div className="glass-card" style={{ marginBottom: 24 }}>
+      <div className="glass-card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+        <div className="glass-card-title">
+          Trading Agent{' '}
+          {status ? (
+            <span
+              style={{
+                marginLeft: 8,
+                padding: '0.2rem 0.55rem',
+                borderRadius: '999px',
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                border: `1px solid ${status.mode === 'paper' ? 'var(--bullish)' : 'var(--bearish)'}`,
+                color: status.mode === 'paper' ? 'var(--bullish)' : 'var(--bearish)',
+                textTransform: 'uppercase',
+              }}
+            >
+              {status.mode} mode
+            </span>
+          ) : null}
+        </div>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button type="button" className="btn" onClick={handleLoadRecommendations} disabled={recsLoading}
+            style={{ padding: '0.5rem 0.9rem', borderRadius: '0.7rem', border: '1px solid var(--glass-border)', background: 'rgba(255,255,255,0.05)', color: 'var(--text-primary)', cursor: 'pointer' }}>
+            {recsLoading ? 'Scanning…' : 'Get Recommendations'}
+          </button>
+          <button type="button" className="btn" onClick={handleRunCycle} disabled={status?.is_running ?? false}
+            style={{ padding: '0.5rem 0.9rem', borderRadius: '0.7rem', border: '1px solid var(--bullish)', background: 'rgba(0,200,120,0.12)', color: 'var(--bullish)', cursor: 'pointer', fontWeight: 700 }}>
+            {status?.is_running ? 'Agent Running…' : 'Run Agent Cycle'}
+          </button>
+        </div>
+      </div>
+
+      {agentError ? <div style={{ color: 'var(--bearish)', marginBottom: 12 }}>{agentError}</div> : null}
+      {runMessage ? <div style={{ color: 'var(--bullish)', marginBottom: 12 }}>{runMessage}</div> : null}
+
+      {status ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: 10, marginBottom: 16 }}>
+          {[
+            ['Open Positions', String(status.open_positions.length)],
+            ['Total Trades', String(status.total_trades)],
+            ['Realized P&L', `Rs ${status.total_realized_pnl.toLocaleString()}`],
+            ['Portfolio Value', `Rs ${status.portfolio_value.toLocaleString()}`],
+            ['Cash', `Rs ${status.cash_balance.toLocaleString()}`],
+            ['Win Rate', `${status.win_rate.toFixed(1)}%`],
+          ].map(([label, value]) => (
+            <div key={label} style={{ padding: '0.85rem', borderRadius: '0.85rem', background: 'rgba(255,255,255,0.03)' }}>
+              <div style={{ fontSize: '0.64rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
+              <div style={{ fontSize: '0.95rem', fontWeight: 700, marginTop: 5 }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ color: 'var(--text-secondary)', marginBottom: 12 }}>Loading agent status…</div>
+      )}
+
+      {status && status.open_positions.length > 0 ? (
+        <div style={{ marginBottom: 16, overflowX: 'auto' }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>Open Positions</div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+            <thead>
+              <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
+                {['Symbol', 'Units', 'Entry', 'Current', 'Stop', 'Target', 'P&L %'].map((h) => (
+                  <th key={h} style={{ padding: '0.4rem 0.6rem' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {status.open_positions.map((p) => (
+                <tr key={p.symbol} style={{ borderTop: '1px solid var(--glass-border)' }}>
+                  <td style={{ padding: '0.45rem 0.6rem', fontWeight: 700 }}>{p.symbol}</td>
+                  <td style={{ padding: '0.45rem 0.6rem' }}>{p.units}</td>
+                  <td style={{ padding: '0.45rem 0.6rem' }}>{p.entry_price.toFixed(2)}</td>
+                  <td style={{ padding: '0.45rem 0.6rem' }}>{p.current_price.toFixed(2)}</td>
+                  <td style={{ padding: '0.45rem 0.6rem' }}>{p.stop_loss.toFixed(2)}</td>
+                  <td style={{ padding: '0.45rem 0.6rem' }}>{p.target_1.toFixed(2)}</td>
+                  <td style={{ padding: '0.45rem 0.6rem', color: p.unrealized_pnl_pct >= 0 ? 'var(--bullish)' : 'var(--bearish)', fontWeight: 700 }}>
+                    {p.unrealized_pnl_pct.toFixed(2)}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {recommendations.length > 0 ? (
+        <div style={{ overflowX: 'auto' }}>
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>Top Buy Recommendations (ML + FCS ranked)</div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+            <thead>
+              <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
+                {['#', 'Symbol', 'Sector', 'CMP', 'Rise Prob', 'R:R', 'Stop', 'Target 1', 'Size %', 'Reasoning'].map((h) => (
+                  <th key={h} style={{ padding: '0.4rem 0.6rem' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {recommendations.map((rec) => (
+                <tr key={rec.symbol} style={{ borderTop: '1px solid var(--glass-border)' }}>
+                  <td style={{ padding: '0.45rem 0.6rem' }}>{rec.rank}</td>
+                  <td style={{ padding: '0.45rem 0.6rem', fontWeight: 700 }}>{rec.symbol}</td>
+                  <td style={{ padding: '0.45rem 0.6rem', color: 'var(--text-secondary)' }}>{rec.sector}</td>
+                  <td style={{ padding: '0.45rem 0.6rem' }}>{rec.cmp.toFixed(1)}</td>
+                  <td style={{ padding: '0.45rem 0.6rem', color: rec.rise_probability >= 68 ? 'var(--bullish)' : 'var(--text-primary)', fontWeight: 700 }}>
+                    {rec.rise_probability.toFixed(1)}%
+                  </td>
+                  <td style={{ padding: '0.45rem 0.6rem' }}>{rec.risk_reward.toFixed(2)}</td>
+                  <td style={{ padding: '0.45rem 0.6rem' }}>{rec.stop_loss.toFixed(1)}</td>
+                  <td style={{ padding: '0.45rem 0.6rem' }}>{rec.target_1.toFixed(1)}</td>
+                  <td style={{ padding: '0.45rem 0.6rem' }}>{rec.kelly_size_pct.toFixed(1)}%</td>
+                  <td style={{ padding: '0.45rem 0.6rem', color: 'var(--text-secondary)', maxWidth: 360 }}>{rec.reasoning}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -216,6 +392,8 @@ export default function AutonomousPage() {
                 <div className="stat-change">{dashboard.status.latest_training_at ? 'Model suite trained' : 'Bootstrap heuristic active'}</div>
               </div>
             </div>
+
+            <TradingAgentPanel />
 
             <div className="dashboard-grid grid-2" style={{ marginBottom: 24 }}>
               <div className="glass-card">

@@ -59,9 +59,17 @@ def _git_pull_private_repo(github_token: str | None) -> None:
 
 def _mount_drive() -> None:
     try:
+        from IPython import get_ipython
         from google.colab import drive  # type: ignore
     except Exception:
         LOGGER.info("Not running inside Colab; skipping Drive mount.")
+        return
+    if get_ipython() is None:
+        LOGGER.warning(
+            "Drive mount requested from a non-notebook Python subprocess. "
+            "Run `from google.colab import drive; drive.mount('/content/drive')` "
+            "in a Colab Python cell, then rerun this script without --mount-drive."
+        )
         return
     drive.mount("/content/drive", force_remount=False)
 

@@ -703,3 +703,79 @@ export async function fetchAutonomousSignals(limit: number = 25): Promise<ApiAut
 export async function fetchAutonomousSignal(symbol: string): Promise<ApiAutonomousSignalCard> {
   return fetchJson<ApiAutonomousSignalCard>(`/api/autonomous/signals/${symbol}`);
 }
+
+// ─── Trading Agent ────────────────────────────────────────────────────────────
+
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...FETCH_OPTIONS,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to post ${path}: ${response.statusText}`);
+  }
+  return response.json();
+}
+
+export interface ApiTraderPosition {
+  symbol: string;
+  sector: string;
+  units: number;
+  entry_price: number;
+  entry_date: string;
+  stop_loss: number;
+  target_1: number;
+  target_2: number;
+  current_price: number;
+  unrealized_pnl: number;
+  unrealized_pnl_pct: number;
+  ml_confidence: number;
+  status: string;
+}
+
+export interface ApiTraderStatus {
+  is_running: boolean;
+  mode: string;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  open_positions: ApiTraderPosition[];
+  total_trades: number;
+  total_realized_pnl: number;
+  portfolio_value: number;
+  cash_balance: number;
+  peak_portfolio_value: number;
+  max_drawdown_pct: number;
+  win_rate: number;
+  last_run_summary: Record<string, unknown> | null;
+}
+
+export interface ApiTraderRecommendation {
+  rank: number;
+  symbol: string;
+  sector: string;
+  cmp: number;
+  rise_probability: number;
+  action: string;
+  confidence: number;
+  risk_reward: number;
+  stop_loss: number;
+  target_1: number;
+  target_2: number;
+  kelly_size_pct: number;
+  fcs_score: number;
+  reasoning: string;
+}
+
+export async function fetchTraderStatus(): Promise<ApiTraderStatus> {
+  return fetchJson<ApiTraderStatus>('/api/autonomous/trader/status');
+}
+
+export async function fetchTraderRecommendations(topN: number = 10): Promise<ApiTraderRecommendation[]> {
+  return fetchJson<ApiTraderRecommendation[]>(`/api/autonomous/trader/recommendations?top_n=${topN}`);
+}
+
+export async function runTraderCycle(): Promise<{ message: string; mode: string }> {
+  return postJson<{ message: string; mode: string }>('/api/autonomous/trader/run');
+}

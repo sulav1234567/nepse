@@ -58,3 +58,6 @@ backend/autonomous_nepse.db
 *.db
 .env
 node_modules/
+
+# Local model backups created by scripts/import_colab_model.py
+backend/model_artifacts/*.backup_*.joblib

@@ -496,7 +496,17 @@ def build_feature_frame(
     feature_frame["target_return_90d"] = (feature_frame["future_close_90d"] / feature_frame["close"] - 1) * 100
     feature_frame["target_direction_7d"] = (feature_frame["target_return_7d"] > 0).astype(int)
 
-    numeric_columns = feature_frame.select_dtypes(include=[np.number]).columns
+    # Never ffill/fill the label columns: forward-filled targets fabricate
+    # future returns for the most recent rows and poison training.
+    label_columns = {
+        "future_close_7d", "future_close_30d", "future_close_90d",
+        "target_return_7d", "target_return_30d", "target_return_90d",
+        "target_direction_7d",
+    }
+    numeric_columns = [
+        column for column in feature_frame.select_dtypes(include=[np.number]).columns
+        if column not in label_columns
+    ]
     feature_frame[numeric_columns] = feature_frame[numeric_columns].replace([np.inf, -np.inf], np.nan)
     feature_frame[numeric_columns] = feature_frame[numeric_columns].ffill().fillna(0.0)
     return feature_frame

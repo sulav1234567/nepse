@@ -64,6 +64,25 @@ class Settings(BaseSettings):
         ]
     )
 
+    # ── Broker / Trading Agent ────────────────────────────────────────────────
+    broker_paper_mode: bool = True          # False = real live trading
+    mero_share_client_id: str = ""
+    mero_share_password: str = ""
+    mero_share_dp_id: str = ""
+    tms_url: str = ""                       # e.g. https://tms49.nepse.com.np
+    tms_username: str = ""
+    tms_password: str = ""
+    tms_pin: str = ""
+
+    # Agent risk parameters
+    agent_max_position_pct: float = 0.12   # max 12% of portfolio per stock
+    agent_min_rise_probability: float = 68.0
+    agent_min_risk_reward: float = 1.5
+    agent_max_open_positions: int = 10
+    agent_kelly_fraction: float = 0.30     # fractional Kelly (conservative)
+    agent_min_trade_npr: float = 5000.0    # minimum trade amount in NPR
+    agent_max_drawdown_pct: float = 15.0   # halt if portfolio drops > this %
+
     def ensure_directories(self) -> None:
         """Create runtime directories used by the platform when missing."""
         for path_value in (

@@ -14,7 +14,11 @@ from typing import Any, Optional
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor, RandomForestRegressor
+from sklearn.ensemble import (
+    HistGradientBoostingClassifier,
+    HistGradientBoostingRegressor,
+    RandomForestRegressor,
+)
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import accuracy_score, mean_absolute_error, r2_score
 from sklearn.neural_network import MLPRegressor
@@ -132,38 +136,72 @@ class TreeEnsembleModel:
         self.is_trained = False
 
     def _build_regressors(self) -> list[Any]:
-        models: list[Any] = [GradientBoostingRegressor(random_state=42, n_estimators=120)]
+        models: list[Any] = [
+            HistGradientBoostingRegressor(
+                random_state=42, max_iter=300, max_depth=4,
+                learning_rate=0.04, min_samples_leaf=20,
+                l2_regularization=1.0, early_stopping=True,
+            )
+        ]
         if HAS_XGBOOST:
             models.append(
                 XGBRegressor(
-                    n_estimators=80,
-                    max_depth=3,
-                    learning_rate=0.05,
-                    subsample=0.85,
-                    colsample_bytree=0.85,
+                    n_estimators=300,
+                    max_depth=4,
+                    learning_rate=0.03,
+                    subsample=0.8,
+                    colsample_bytree=0.8,
+                    reg_alpha=0.1,
+                    reg_lambda=1.0,
+                    min_child_weight=5,
                     random_state=42,
+                    tree_method="hist",
                 )
             )
         if HAS_LIGHTGBM:
-            models.append(LGBMRegressor(n_estimators=120, learning_rate=0.04, num_leaves=31, random_state=42))
+            models.append(
+                LGBMRegressor(
+                    n_estimators=300, learning_rate=0.03, num_leaves=31,
+                    min_child_samples=20, reg_alpha=0.1, reg_lambda=1.0,
+                    subsample=0.8, colsample_bytree=0.8,
+                    random_state=42, verbose=-1,
+                )
+            )
         return models
 
     def _build_classifiers(self) -> list[Any]:
-        models: list[Any] = [GradientBoostingClassifier(random_state=42, n_estimators=120)]
+        models: list[Any] = [
+            HistGradientBoostingClassifier(
+                random_state=42, max_iter=300, max_depth=4,
+                learning_rate=0.04, min_samples_leaf=20,
+                l2_regularization=1.0, early_stopping=True,
+            )
+        ]
         if HAS_XGBOOST:
             models.append(
                 XGBClassifier(
-                    n_estimators=80,
-                    max_depth=3,
-                    learning_rate=0.05,
-                    subsample=0.85,
-                    colsample_bytree=0.85,
+                    n_estimators=300,
+                    max_depth=4,
+                    learning_rate=0.03,
+                    subsample=0.8,
+                    colsample_bytree=0.8,
+                    reg_alpha=0.1,
+                    reg_lambda=1.0,
+                    min_child_weight=5,
                     random_state=42,
                     eval_metric="logloss",
+                    tree_method="hist",
                 )
             )
         if HAS_LIGHTGBM:
-            models.append(LGBMClassifier(n_estimators=120, learning_rate=0.04, num_leaves=31, random_state=42))
+            models.append(
+                LGBMClassifier(
+                    n_estimators=300, learning_rate=0.03, num_leaves=31,
+                    min_child_samples=20, reg_alpha=0.1, reg_lambda=1.0,
+                    subsample=0.8, colsample_bytree=0.8,
+                    random_state=42, verbose=-1,
+                )
+            )
         return models
 
     def train(self, train_frame: pd.DataFrame, feature_cols: list[str]) -> None:
@@ -331,9 +369,12 @@ class SequenceLSTMModel(SequenceModelBase):
             device = _torch_device()
             self.model = LSTMForecaster(
                 len(feature_cols),
-                hidden_size=_env_int("NEPSE_LSTM_HIDDEN_SIZE", 96),
+                hidden_size=_env_int("NEPSE_LSTM_HIDDEN_SIZE", 128),
             ).to(device)
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=5e-4, weight_decay=1e-4)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=_env_int("NEPSE_LSTM_EPOCHS", 80)
+            )
             loss_fn = nn.SmoothL1Loss()
             dataset = TensorDataset(
                 torch.as_tensor(sequences, dtype=torch.float32),
@@ -341,12 +382,16 @@ class SequenceLSTMModel(SequenceModelBase):
             )
             loader = DataLoader(
                 dataset,
-                batch_size=_env_int("NEPSE_SEQUENCE_BATCH_SIZE", 256),
+                batch_size=_env_int("NEPSE_SEQUENCE_BATCH_SIZE", 128),
                 shuffle=True,
                 pin_memory=device.type == "cuda",
+                drop_last=True,
             )
             self.model.train()
-            for _ in range(_env_int("NEPSE_LSTM_EPOCHS", 50)):
+            best_loss = float("inf")
+            patience_count = 0
+            for epoch in range(_env_int("NEPSE_LSTM_EPOCHS", 80)):
+                epoch_loss = 0.0
                 for batch_x, batch_y in loader:
                     batch_x = batch_x.to(device, non_blocking=True)
                     batch_y = batch_y.to(device, non_blocking=True)
@@ -354,7 +399,18 @@ class SequenceLSTMModel(SequenceModelBase):
                     prediction = self.model(batch_x)
                     loss = loss_fn(prediction, batch_y)
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     optimizer.step()
+                    epoch_loss += loss.item()
+                scheduler.step()
+                avg_loss = epoch_loss / max(1, len(loader))
+                if avg_loss < best_loss:
+                    best_loss = avg_loss
+                    patience_count = 0
+                else:
+                    patience_count += 1
+                if patience_count >= 12:
+                    break
         else:
             flattened = np.nan_to_num(sequences.reshape(len(sequences), -1), nan=0.0, posinf=0.0, neginf=0.0)
             self.model = MLPRegressor(hidden_layer_sizes=(64, 32), random_state=42, max_iter=120)
@@ -397,9 +453,12 @@ class TemporalFusionStyleModel(SequenceModelBase):
             device = _torch_device()
             self.model = AttentionForecaster(
                 len(feature_cols),
-                hidden_size=_env_int("NEPSE_TFT_HIDDEN_SIZE", 96),
+                hidden_size=_env_int("NEPSE_TFT_HIDDEN_SIZE", 128),
             ).to(device)
-            optimizer = torch.optim.AdamW(self.model.parameters(), lr=0.001)
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=5e-4, weight_decay=1e-4)
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=_env_int("NEPSE_TFT_EPOCHS", 80)
+            )
             loss_fn = nn.SmoothL1Loss()
             dataset = TensorDataset(
                 torch.as_tensor(sequences, dtype=torch.float32),
@@ -407,12 +466,16 @@ class TemporalFusionStyleModel(SequenceModelBase):
             )
             loader = DataLoader(
                 dataset,
-                batch_size=_env_int("NEPSE_SEQUENCE_BATCH_SIZE", 256),
+                batch_size=_env_int("NEPSE_SEQUENCE_BATCH_SIZE", 128),
                 shuffle=True,
                 pin_memory=device.type == "cuda",
+                drop_last=True,
             )
             self.model.train()
-            for _ in range(_env_int("NEPSE_TFT_EPOCHS", 50)):
+            best_loss = float("inf")
+            patience_count = 0
+            for epoch in range(_env_int("NEPSE_TFT_EPOCHS", 80)):
+                epoch_loss = 0.0
                 for batch_x, batch_y in loader:
                     batch_x = batch_x.to(device, non_blocking=True)
                     batch_y = batch_y.to(device, non_blocking=True)
@@ -420,7 +483,18 @@ class TemporalFusionStyleModel(SequenceModelBase):
                     prediction = self.model(batch_x)
                     loss = loss_fn(prediction, batch_y)
                     loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                     optimizer.step()
+                    epoch_loss += loss.item()
+                scheduler.step()
+                avg_loss = epoch_loss / max(1, len(loader))
+                if avg_loss < best_loss:
+                    best_loss = avg_loss
+                    patience_count = 0
+                else:
+                    patience_count += 1
+                if patience_count >= 12:
+                    break
         else:
             flattened = np.nan_to_num(sequences.reshape(len(sequences), -1), nan=0.0, posinf=0.0, neginf=0.0)
             self.model = RandomForestRegressor(n_estimators=60, random_state=42, n_jobs=-1)
@@ -458,6 +532,13 @@ class ReinforcementLearningStrategyModel:
         self.model: Any = None
         self.feature_cols: list[str] = []
         self.is_trained = False
+
+    def _prepare_for_save(self) -> None:
+        if not HAS_PPO or self.model is None:
+            return
+        for attribute in ("env", "_vec_normalize_env"):
+            if hasattr(self.model, attribute):
+                setattr(self.model, attribute, None)
 
     def train(self, train_frame: pd.DataFrame, feature_cols: list[str]) -> None:
         self.feature_cols = list(feature_cols)
@@ -499,9 +580,10 @@ class ReinforcementLearningStrategyModel:
             n_steps=_env_int("NEPSE_PPO_N_STEPS", 256),
             batch_size=_env_int("NEPSE_PPO_BATCH_SIZE", 256),
             learning_rate=3e-4,
-            device="auto",
+            device=os.getenv("NEPSE_PPO_DEVICE", "cpu"),
         )
         self.model.learn(total_timesteps=_env_int("NEPSE_PPO_TIMESTEPS", 100_000))
+        self._prepare_for_save()
         self.is_trained = True
 
     def predict_frame(self, frame: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
@@ -669,6 +751,7 @@ class AutonomousModelSuite:
         self.artifact_path.parent.mkdir(parents=True, exist_ok=True)
         self.lstm._move_model_to_cpu()
         self.tft._move_model_to_cpu()
+        self.rl._prepare_for_save()
         joblib.dump(self, self.artifact_path)
 
     @classmethod
@@ -689,9 +772,15 @@ class AutonomousModelSuite:
         )
         dataset = dataset.sort_values("date").reset_index(drop=True)
         dataset = dataset.replace([np.inf, -np.inf], np.nan).dropna(subset=["target_return_7d", "target_return_30d", "target_return_90d"])
-        max_rows = _env_int("NEPSE_TRAINING_MAX_ROWS", 12_000)
+        max_rows = _env_int("NEPSE_TRAINING_MAX_ROWS", 60_000)
         if len(dataset) > max_rows:
-            dataset = dataset.tail(max_rows).reset_index(drop=True)
+            # Keep recent data but also sample from older history for diversity
+            recent = dataset.tail(int(max_rows * 0.75))
+            older = dataset.iloc[: len(dataset) - int(max_rows * 0.75)]
+            sampled_older = older.sample(
+                n=min(len(older), int(max_rows * 0.25)), random_state=42
+            ) if len(older) > 0 else pd.DataFrame()
+            dataset = pd.concat([sampled_older, recent], ignore_index=True).sort_values("date").reset_index(drop=True)
         if len(dataset) < 120:
             logger.warning("Insufficient data to train the autonomous model suite.")
             return
@@ -711,11 +800,22 @@ class AutonomousModelSuite:
         self.meta.train(base_valid, valid_frame[sentiment_columns], valid_frame)
 
         meta_predictions, probabilities = self._meta_predict_frame(valid_frame, base_valid)
+        y_true_7d = (valid_frame["target_return_7d"] > 0).values
+        y_pred_7d = (meta_predictions["meta_return_7d"] > 0).values
+        y_true_30d = valid_frame["target_return_30d"].values
+        y_pred_30d = meta_predictions["meta_return_30d"].values
+        # Precision-like metric: of the signals we'd BUY (top 30%), how many were right?
+        top_30_idx = np.argsort(meta_predictions["meta_return_7d"].values)[-int(len(meta_predictions) * 0.30):]
+        precision_top30 = float(np.mean(y_true_7d[top_30_idx])) * 100 if len(top_30_idx) > 0 else 0.0
         self.metrics = {
-            "accuracy_7d": round(accuracy_score(valid_frame["target_return_7d"] > 0, meta_predictions["meta_return_7d"] > 0) * 100, 2),
+            "accuracy_7d": round(accuracy_score(y_true_7d, y_pred_7d) * 100, 2),
+            "precision_top30pct_7d": round(precision_top30, 2),
             "mae_7d": round(mean_absolute_error(valid_frame["target_return_7d"], meta_predictions["meta_return_7d"]), 4),
-            "r2_30d": round(r2_score(valid_frame["target_return_30d"], meta_predictions["meta_return_30d"]), 4),
+            "r2_7d": round(max(-1.0, r2_score(valid_frame["target_return_7d"], meta_predictions["meta_return_7d"])), 4),
+            "r2_30d": round(max(-1.0, r2_score(y_true_30d, y_pred_30d)), 4),
             "confidence_mean": round(float(np.mean(probabilities)), 2),
+            "validation_samples": len(valid_frame),
+            "training_samples": len(train_frame),
         }
         self.model_version = datetime.utcnow().strftime("ensemble-%Y%m%d%H%M%S")
         self.last_trained_at = datetime.utcnow()
