@@ -704,6 +704,22 @@ export async function fetchAutonomousSignals(limit: number = 25): Promise<ApiAut
   return fetchJson<ApiAutonomousSignalCard[]>(`/api/autonomous/signals?limit=${limit}`);
 }
 
+export interface ApiRescoreStatus {
+  in_progress: boolean;
+  latest_scoring_at?: string | null;
+  latest_training_at?: string | null;
+}
+
+/** Start a full rescore with the LATEST trained model (non-blocking; poll for status). */
+export async function refreshAutonomousSignals(limit: number = 25): Promise<{ status: string }> {
+  return postJson<{ status: string }>(`/api/autonomous/signals/refresh?limit=${limit}`);
+}
+
+/** Poll whether the background rescore has finished. */
+export async function fetchRescoreStatus(): Promise<ApiRescoreStatus> {
+  return fetchJson<ApiRescoreStatus>('/api/autonomous/signals/refresh/status');
+}
+
 export async function fetchAutonomousSignal(symbol: string): Promise<ApiAutonomousSignalCard> {
   return fetchJson<ApiAutonomousSignalCard>(`/api/autonomous/signals/${symbol}`);
 }

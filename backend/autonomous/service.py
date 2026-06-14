@@ -491,6 +491,46 @@ class AutonomousResearchPlatform:
     def refresh_signal_cards(self, limit: int = 25) -> list[SignalCard]:
         return self.generate_signal_cards(limit=limit, persist=True, live_mode=True)
 
+    def start_background_rescore(self, limit: int = 25) -> dict[str, Any]:
+        """Kick off a full rescore (all symbols, latest model) in a background thread.
+
+        Rescoring runs the model over every stock with live features — minutes of
+        work — so we never block the HTTP request on it. The frontend polls
+        rescore_status() until it finishes.
+        """
+        import threading
+
+        with self._signal_cache_lock:
+            if getattr(self, "_rescore_in_progress", False):
+                return {"status": "already_running"}
+            self._rescore_in_progress = True
+
+        def _run() -> None:
+            try:
+                self.refresh_signal_cards(limit=limit)
+            except Exception as exc:  # pragma: no cover - logged for ops
+                logger.exception("Background rescore failed: %s", exc)
+            finally:
+                self._rescore_in_progress = False
+
+        threading.Thread(target=_run, name="autonomous-rescore", daemon=True).start()
+        return {"status": "started"}
+
+    def rescore_status(self) -> dict[str, Any]:
+        """Whether a rescore is running + the scoring/training timestamps."""
+        status = self.system_status()
+
+        def _iso(value: Any) -> Optional[str]:
+            if value is None:
+                return None
+            return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+        return {
+            "in_progress": getattr(self, "_rescore_in_progress", False),
+            "latest_scoring_at": _iso(status.latest_scoring_at),
+            "latest_training_at": _iso(status.latest_training_at),
+        }
+
     def generate_signal_cards(self, limit: int = 25, persist: bool = True, live_mode: bool = True) -> list[SignalCard]:
         if not self._symbols():
             self.run_ingestion_cycle()

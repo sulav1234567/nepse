@@ -54,9 +54,16 @@ def autonomous_signals(limit: int = 25, platform: AutonomousResearchPlatform = D
     return platform.signal_cards(limit=limit)
 
 
-@router.post("/signals/refresh", response_model=list[SignalCard])
-def autonomous_refresh_signals(limit: int = 25, platform: AutonomousResearchPlatform = Depends(get_research_platform)) -> list[SignalCard]:
-    return platform.refresh_signal_cards(limit=limit)
+@router.post("/signals/refresh")
+def autonomous_refresh_signals(limit: int = 25, platform: AutonomousResearchPlatform = Depends(get_research_platform)) -> dict:
+    """Start a full rescore (all stocks, latest model) in the background and return
+    immediately. Poll GET /signals/refresh/status for completion."""
+    return platform.start_background_rescore(limit=limit)
+
+
+@router.get("/signals/refresh/status")
+def autonomous_refresh_status(platform: AutonomousResearchPlatform = Depends(get_research_platform)) -> dict:
+    return platform.rescore_status()
 
 
 @router.get("/signals/{symbol}", response_model=SignalCard)
