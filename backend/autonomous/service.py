@@ -338,13 +338,16 @@ class AutonomousResearchPlatform:
             market_article_body_limit=market_article_body_limit,
         )
 
-    def train_models(self, force: bool = False) -> dict[str, Any]:
+    def train_models(self, force: bool = False, symbol_limit: int | None = None) -> dict[str, Any]:
         symbols = self._symbols()
         if not symbols:
             self.run_ingestion_cycle()
             symbols = self._symbols()
         if not symbols:
             return {"trained": False, "reason": "No symbols loaded"}
+        # Cap symbols for fast smoke tests (full runs pass None → all symbols).
+        if symbol_limit:
+            symbols = symbols[:symbol_limit]
 
         if not force and self.model_suite.last_trained_at and _utcnow() - self.model_suite.last_trained_at < timedelta(hours=6):
             return {"trained": False, "reason": "Recent training already available", "last_trained_at": self.model_suite.last_trained_at.isoformat()}

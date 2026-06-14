@@ -173,7 +173,7 @@ def _train_once(args: argparse.Namespace, cycle: int, backup_dir: Path) -> dict[
         )
 
     ingestion_summary = platform.run_ingestion_cycle()
-    training_summary = platform.train_models(force=True)
+    training_summary = platform.train_models(force=True, symbol_limit=args.symbol_limit)
     artifact_path = Path(platform.model_suite.artifact_path)
     backup_path = _copy_versioned_artifact(
         artifact_path,
