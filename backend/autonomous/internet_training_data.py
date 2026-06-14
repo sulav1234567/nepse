@@ -10,7 +10,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from typing import Any, Optional
@@ -232,7 +232,7 @@ class InternetTrainingDataBuilder:
         market_news_pages: int = 5,
         market_article_body_limit: int = 30,
     ) -> dict[str, Any]:
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc).replace(tzinfo=None)
         requested_profile = profile.lower().strip()
         if requested_profile not in {"high_level", "advanced"}:
             raise ValueError("profile must be either 'high_level' or 'advanced'")
@@ -364,7 +364,7 @@ class InternetTrainingDataBuilder:
                 key_field="source_url",
             )
 
-        finished_at = datetime.utcnow()
+        finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
         summary["finished_at"] = finished_at.isoformat()
         summary["duration_seconds"] = round((finished_at - started_at).total_seconds(), 2)
         summary["nepse_index_rows"] = len(index_rows)
@@ -628,7 +628,7 @@ class InternetTrainingDataBuilder:
             "company_name": context.company_name,
             "sector": context.sector,
             "fiscal_period": fiscal_period,
-            "report_date": datetime.utcnow().date().isoformat(),
+            "report_date": datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat(),
             "eps": round(eps, 4),
             "pe": round(pe, 4),
             "pb": round(pb, 4),
@@ -695,7 +695,7 @@ class InternetTrainingDataBuilder:
                 if not href:
                     continue
                 source_url = urljoin("https://www.sharesansar.com", href)
-                published_at = str(row.get("published_date") or _extract_date_from_url(source_url) or datetime.utcnow().date().isoformat())
+                published_at = str(row.get("published_date") or _extract_date_from_url(source_url) or datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat())
                 body = title_text
                 items.append(
                     {
@@ -741,7 +741,7 @@ class InternetTrainingDataBuilder:
                             "language": "en",
                             "title": title,
                             "body": title,
-                            "published_at": _extract_date_from_url(source_url) or datetime.utcnow().date().isoformat(),
+                            "published_at": _extract_date_from_url(source_url) or datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat(),
                             "sentiment_score": _score_sentiment(title),
                         }
                     )
@@ -762,7 +762,7 @@ class InternetTrainingDataBuilder:
         return rows
 
     def _fetch_nepse_index_history_full(self) -> list[dict[str, Any]]:
-        today = datetime.utcnow().date().isoformat()
+        today = datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat()
         response = httpx.get(
             SHARESANSAR_INDEX_URL,
             params={
@@ -896,7 +896,7 @@ class InternetTrainingDataBuilder:
                 NRB_FOREX_URL,
                 params={
                     "from": "2019-01-01",
-                    "to": datetime.utcnow().date().isoformat(),
+                    "to": datetime.now(timezone.utc).replace(tzinfo=None).date().isoformat(),
                     "per_page": 100,
                     "page": page,
                 },

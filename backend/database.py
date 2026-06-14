@@ -6,7 +6,7 @@ import logging
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from bson.objectid import ObjectId
 
 logger = logging.getLogger("nepse-alpha")
@@ -101,7 +101,7 @@ class UserManager:
             "username": username,
             "password": hashed_password,
             "full_name": full_name,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
             "is_active": True,
             "portfolio": [],
             "watchlist": [],

@@ -4,7 +4,7 @@ Authentication Service - JWT Token Management and Password Hashing
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from jose import JWTError, jwt
 import bcrypt
@@ -81,7 +81,7 @@ class AuthService:
         if expires_delta is None:
             expires_delta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc).replace(tzinfo=None) + expires_delta
         to_encode = {"sub": email, "exp": expire}
         
         encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
