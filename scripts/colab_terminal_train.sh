@@ -63,8 +63,10 @@ COMMON_ARGS=(
   --git-pull
   --profile advanced
   --drive-root "${DRIVE_ROOT}"
-  --inference-batch-size 4096
+  --inference-batch-size 2048
 )
+# AUTO_DISCONNECT=1 (default) releases the Colab runtime when training ends.
+[ "${AUTO_DISCONNECT:-1}" = "1" ] && COMMON_ARGS+=(--auto-disconnect)
 [ -n "${SYMBOL_LIMIT}" ] && COMMON_ARGS+=(--symbol-limit "${SYMBOL_LIMIT}")
 
 if [ "${SMOKE:-0}" = "1" ]; then
@@ -83,6 +85,7 @@ else
     --lstm-epochs 60 --tft-epochs 60 \
     --sequence-batch-size 1024 \
     --lstm-hidden-size 256 --tft-hidden-size 256 \
+    --inference-batch-size 2048 \
     --ppo-timesteps 300000
 fi
 

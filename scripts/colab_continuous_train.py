@@ -109,6 +109,9 @@ def _configure_environment(args: argparse.Namespace) -> Path:
     os.environ.setdefault("NEPSE_PPO_TIMESTEPS", str(args.ppo_timesteps))
     os.environ.setdefault("NEPSE_PPO_N_STEPS", str(args.ppo_n_steps))
     os.environ.setdefault("NEPSE_PPO_BATCH_SIZE", str(args.ppo_batch_size))
+    # Reduce CUDA fragmentation so large batches don't trip an avoidable OOM that
+    # would kill the run. Stay just under the limit rather than over it.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     return backup_dir
 
@@ -221,13 +224,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lstm-epochs", type=int, default=60)
     parser.add_argument("--tft-epochs", type=int, default=60)
     parser.add_argument("--sequence-batch-size", type=int, default=1024)
-    parser.add_argument("--inference-batch-size", type=int, default=4096)
+    # 2048 keeps the backtest forward pass safely under 80GB with hidden=256.
+    # (4096 risks the OOM that was previously hit at 1024/hidden=128 on a 40GB card.)
+    parser.add_argument("--inference-batch-size", type=int, default=2048)
     parser.add_argument("--lstm-hidden-size", type=int, default=256)
     parser.add_argument("--tft-hidden-size", type=int, default=256)
     parser.add_argument("--ppo-timesteps", type=int, default=300_000)
+    parser.add_argument(
+        "--auto-disconnect",
+        action="store_true",
+        help="Release the Colab runtime when training finishes (saves compute units).",
+    )
     parser.add_argument("--ppo-n-steps", type=int, default=256)
     parser.add_argument("--ppo-batch-size", type=int, default=256)
     return parser.parse_args()
+
+
+def _disconnect_runtime(grace_seconds: float = 10.0) -> None:
+    """Release the Colab runtime when training is done, to stop burning compute units.
+
+    Waits a few seconds first so the artifact finishes syncing to Drive, then tries
+    the official Colab API (works from a notebook), falling back to ending the VM
+    session (works from the terminal).
+    """
+    LOGGER.info("Training complete. Auto-disconnecting in %.0fs (letting Drive finish syncing)…", grace_seconds)
+    time.sleep(grace_seconds)
+    try:
+        from google.colab import runtime  # type: ignore
+
+        runtime.unassign()
+        LOGGER.info("✓ Colab runtime released — compute units stopped.")
+        return
+    except Exception as exc:
+        LOGGER.warning("Colab runtime API unavailable (%s); terminating the VM session instead.", exc)
+    # Terminal/subprocess fallback: ending the session frees the runtime.
+    os.system("kill -9 -1 >/dev/null 2>&1")
 
 
 def main() -> None:
@@ -270,6 +301,9 @@ def main() -> None:
         sleep_seconds = max(60.0, args.train_interval_minutes * 60.0)
         LOGGER.info("Sleeping %.0f seconds before next cycle.", sleep_seconds)
         time.sleep(sleep_seconds)
+
+    if args.auto_disconnect:
+        _disconnect_runtime()
 
 
 if __name__ == "__main__":
