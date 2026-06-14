@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -319,7 +319,7 @@ class DataIngestionService:
         # Daily bars must be date-aligned (midnight) so the live snapshot bar shares
         # the same timestamp granularity as the archive bars — otherwise we get
         # duplicate same-day rows and mixed datetime formats that break backtesting.
-        now = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        now = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
         stock_records: list[dict[str, Any]] = []
         with self.database.session() as session:
             for stock in stocks:
