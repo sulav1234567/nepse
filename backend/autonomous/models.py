@@ -7,7 +7,13 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (avoids the deprecated datetime.utcnow while keeping the
+    naive-datetime semantics the rest of the codebase compares against)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 from pathlib import Path
 from typing import Any, Optional
 
@@ -694,7 +700,11 @@ class NewsSentimentModel:
 class ContextualMetaLearner:
     def __init__(self) -> None:
         self.return_models: dict[int, Ridge] = {}
-        self.direction_model = LogisticRegression(max_iter=500)
+        # Higher max_iter + scaled inputs: the meta features are collinear (rolling
+        # windows, macro corrs, broker flows), which left the solver ill-conditioned
+        # and non-converging. Standardising the inputs fixes both.
+        self.direction_model = LogisticRegression(max_iter=2000)
+        self.scaler = StandardScaler()
         self.context_columns: list[str] = []
         self.feature_names: list[str] = []
         self.is_trained = False
@@ -703,9 +713,11 @@ class ContextualMetaLearner:
         self.context_columns = [column for column in context_frame.columns if pd.api.types.is_numeric_dtype(context_frame[column])]
         features = pd.concat([base_frame, context_frame[self.context_columns]], axis=1).fillna(0.0)
         self.feature_names = list(features.columns)
-        x = np.nan_to_num(features.to_numpy(dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+        raw = np.nan_to_num(features.to_numpy(dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+        x = self.scaler.fit_transform(raw)
         for horizon in HORIZONS:
-            model = Ridge(alpha=1.0)
+            # Stronger ridge regularisation tames the remaining collinearity.
+            model = Ridge(alpha=10.0)
             y = np.nan_to_num(target_frame[f"target_return_{horizon}d"].to_numpy(dtype=np.float32), nan=0.0)
             model.fit(x, y)
             self.return_models[horizon] = model
@@ -715,7 +727,10 @@ class ContextualMetaLearner:
     def predict(self, base_row: pd.DataFrame, context_row: pd.DataFrame) -> tuple[dict[int, float], float]:
         features = pd.concat([base_row, context_row[self.context_columns]], axis=1).fillna(0.0)
         features = features.reindex(columns=self.feature_names, fill_value=0.0)
-        x = np.nan_to_num(features.to_numpy(dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+        raw = np.nan_to_num(features.to_numpy(dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+        # Backward-compatible: models pickled before scaling have no .scaler.
+        scaler = getattr(self, "scaler", None)
+        x = scaler.transform(raw) if (self.is_trained and scaler is not None) else raw
         returns = {
             horizon: float(model.predict(x)[0])
             for horizon, model in self.return_models.items()
@@ -828,8 +843,8 @@ class AutonomousModelSuite:
             "validation_samples": len(valid_frame),
             "training_samples": len(train_frame),
         }
-        self.model_version = datetime.utcnow().strftime("ensemble-%Y%m%d%H%M%S")
-        self.last_trained_at = datetime.utcnow()
+        self.model_version = _utcnow().strftime("ensemble-%Y%m%d%H%M%S")
+        self.last_trained_at = _utcnow()
         self.save()
 
     def _base_prediction_frame(self, frame: pd.DataFrame) -> pd.DataFrame:

@@ -63,7 +63,7 @@ COMMON_ARGS=(
   --git-pull
   --profile advanced
   --drive-root "${DRIVE_ROOT}"
-  --inference-batch-size 1024
+  --inference-batch-size 4096
 )
 [ -n "${SYMBOL_LIMIT}" ] && COMMON_ARGS+=(--symbol-limit "${SYMBOL_LIMIT}")
 
@@ -74,15 +74,16 @@ if [ "${SMOKE:-0}" = "1" ]; then
     --market-news-pages 2 --market-article-body-limit 20 \
     --max-training-rows 20000 --lstm-epochs 3 --tft-epochs 3 --ppo-timesteps 2000
 else
-  echo "==> FULL TRAINING (A100 defaults, max-cycles=${MAX_CYCLES})"
+  echo "==> FULL TRAINING (A100 80GB tuned, max-cycles=${MAX_CYCLES})"
   python3 scripts/colab_continuous_train.py "${COMMON_ARGS[@]}" \
     --max-cycles "${MAX_CYCLES}" \
     --market-news-pages 20 --market-article-body-limit 200 --internet-refresh-cycles 6 \
     --train-interval-minutes 60 \
-    --max-training-rows 250000 \
-    --lstm-epochs 50 --tft-epochs 50 \
-    --sequence-batch-size 512 \
-    --ppo-timesteps 100000
+    --max-training-rows 600000 \
+    --lstm-epochs 60 --tft-epochs 60 \
+    --sequence-batch-size 1024 \
+    --lstm-hidden-size 256 --tft-hidden-size 256 \
+    --ppo-timesteps 300000
 fi
 
 echo "==> Done. Latest artifact:"

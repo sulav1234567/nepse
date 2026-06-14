@@ -6,7 +6,12 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now (avoids deprecated datetime.utcnow, keeps naive semantics)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 from functools import lru_cache
 from threading import Lock
 from typing import Any, Optional
@@ -165,7 +170,7 @@ class AutonomousResearchPlatform:
         latest_scoring_at = latest_prediction_run[0] if latest_prediction_run is not None else self._cached_signal_cards_as_of
         symbols_covered = self._symbols()
         return SystemStatus(
-            as_of=datetime.utcnow(),
+            as_of=_utcnow(),
             database_backend=self.database.dialect_name,
             timescaledb_active=self.database.is_timescaledb_active,
             latest_ingestion_at=latest_ingestion,
@@ -341,7 +346,7 @@ class AutonomousResearchPlatform:
         if not symbols:
             return {"trained": False, "reason": "No symbols loaded"}
 
-        if not force and self.model_suite.last_trained_at and datetime.utcnow() - self.model_suite.last_trained_at < timedelta(hours=6):
+        if not force and self.model_suite.last_trained_at and _utcnow() - self.model_suite.last_trained_at < timedelta(hours=6):
             return {"trained": False, "reason": "Recent training already available", "last_trained_at": self.model_suite.last_trained_at.isoformat()}
 
         feature_frames = self._feature_frames(symbols)
@@ -353,7 +358,7 @@ class AutonomousResearchPlatform:
                 session.add(
                     BacktestReport(
                         strategy_name=backtest.strategy_name,
-                        run_at=datetime.utcnow(),
+                        run_at=_utcnow(),
                         start_date=None if backtest.start_date is None else backtest.start_date.to_pydatetime(),
                         end_date=None if backtest.end_date is None else backtest.end_date.to_pydatetime(),
                         metrics_json={
@@ -375,7 +380,7 @@ class AutonomousResearchPlatform:
                         artifact_path=str(self.model_suite.artifact_path),
                         metrics_json=self.model_suite.metrics,
                         features_json=self.model_suite.feature_cols,
-                        trained_at=self.model_suite.last_trained_at or datetime.utcnow(),
+                        trained_at=self.model_suite.last_trained_at or _utcnow(),
                     )
                 )
         return {
@@ -549,7 +554,7 @@ class AutonomousResearchPlatform:
                 breadth_flags.append(float(history["close"].iloc[-1]) >= float(history["close"].iloc[-2]))
         breadth_ratio = float(np.mean(breadth_flags)) if breadth_flags else 0.5
         regime_dict = detect_regime(index_frame, breadth_ratio=breadth_ratio)
-        as_of = datetime.utcnow()
+        as_of = _utcnow()
 
         cards: list[SignalCard] = []
         persisted_rows: list[dict[str, Any]] = []
@@ -825,7 +830,7 @@ class AutonomousResearchPlatform:
                                 predicted_return=predicted_return,
                                 realized_return=realized_return,
                                 direction_hit=(predicted_return >= 0) == (realized_return >= 0),
-                                evaluated_at=datetime.utcnow(),
+                                evaluated_at=_utcnow(),
                             )
                         )
                         inserted += 1

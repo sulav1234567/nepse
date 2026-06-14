@@ -17,9 +17,15 @@ import shutil
 import subprocess
 import sys
 import time
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# Cosmetic, irreducible warnings that flood Colab logs without indicating a problem:
+# LightGBM is fed numpy arrays at predict time (it was fit with column names) — the
+# values are identical; sklearn just nags about the missing names.
+warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +104,8 @@ def _configure_environment(args: argparse.Namespace) -> Path:
     os.environ.setdefault("NEPSE_TFT_EPOCHS", str(args.tft_epochs))
     os.environ.setdefault("NEPSE_SEQUENCE_BATCH_SIZE", str(args.sequence_batch_size))
     os.environ.setdefault("NEPSE_INFERENCE_BATCH_SIZE", str(args.inference_batch_size))
+    os.environ.setdefault("NEPSE_LSTM_HIDDEN_SIZE", str(args.lstm_hidden_size))
+    os.environ.setdefault("NEPSE_TFT_HIDDEN_SIZE", str(args.tft_hidden_size))
     os.environ.setdefault("NEPSE_PPO_TIMESTEPS", str(args.ppo_timesteps))
     os.environ.setdefault("NEPSE_PPO_N_STEPS", str(args.ppo_n_steps))
     os.environ.setdefault("NEPSE_PPO_BATCH_SIZE", str(args.ppo_batch_size))
@@ -207,12 +215,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-interval-minutes", type=float, default=60.0)
     parser.add_argument("--max-cycles", type=int, default=0, help="0 means run forever.")
     parser.add_argument("--git-pull", action="store_true", help="Pull latest code from the private GitHub repo each cycle.")
-    parser.add_argument("--max-training-rows", type=int, default=250_000)
-    parser.add_argument("--lstm-epochs", type=int, default=50)
-    parser.add_argument("--tft-epochs", type=int, default=50)
-    parser.add_argument("--sequence-batch-size", type=int, default=256)
-    parser.add_argument("--inference-batch-size", type=int, default=1024)
-    parser.add_argument("--ppo-timesteps", type=int, default=100_000)
+    # A100 80GB / 167GB RAM defaults — the previous values left the GPU ~2% used.
+    # More data + bigger batches + larger sequence models exploit the hardware.
+    parser.add_argument("--max-training-rows", type=int, default=600_000)
+    parser.add_argument("--lstm-epochs", type=int, default=60)
+    parser.add_argument("--tft-epochs", type=int, default=60)
+    parser.add_argument("--sequence-batch-size", type=int, default=1024)
+    parser.add_argument("--inference-batch-size", type=int, default=4096)
+    parser.add_argument("--lstm-hidden-size", type=int, default=256)
+    parser.add_argument("--tft-hidden-size", type=int, default=256)
+    parser.add_argument("--ppo-timesteps", type=int, default=300_000)
     parser.add_argument("--ppo-n-steps", type=int, default=256)
     parser.add_argument("--ppo-batch-size", type=int, default=256)
     return parser.parse_args()

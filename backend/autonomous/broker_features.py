@@ -107,25 +107,30 @@ def build_symbol_broker_features(
         nets = grp.set_index("broker")["net_qty"]
         pos = nets[nets > 0]
         neg = nets[nets < 0]
-        total_vol = float((grp["buy_qty"].abs() + grp["sell_qty"].abs()).sum()) or 1.0
-        accumulation = float(pos.sum())
-        distribution = float(-neg.sum())
-        big_net = float(nets[nets.index.isin(big)].sum())
+        # Normalise everything by the day's traded volume so a small-cap and a
+        # large-cap are comparable (raw share counts were not — that's why the
+        # absolute features had ~0 importance). All net features become a FRACTION
+        # of that day's volume.
+        day_volume = float(grp["buy_qty"].sum()) or 1.0
+        accumulation = float(pos.sum()) / day_volume
+        distribution = float(-neg.sum()) / day_volume
+        big_net = float(nets[nets.index.isin(big)].sum()) / day_volume
+        dominant_net = float(nets.get(dominant, 0.0)) / day_volume
         # Herfindahl concentration of accumulation (few buyers accumulating ⇒ ~1).
         conc = float(((pos / pos.sum()) ** 2).sum()) if pos.sum() > 0 else 0.0
-        top_buyer_net = float(pos.max()) if not pos.empty else 0.0
+        top_buyer_net = (float(pos.max()) / day_volume) if not pos.empty else 0.0
         rows.append({
             "date": date,
-            "bk_net_accumulation": round(accumulation, 2),
-            "bk_net_distribution": round(distribution, 2),
-            "bk_accumulation_ratio": round((accumulation - distribution) / total_vol, 4),
-            "bk_big_net": round(big_net, 2),
+            "bk_net_accumulation": round(accumulation, 4),
+            "bk_net_distribution": round(distribution, 4),
+            "bk_accumulation_ratio": round(accumulation - distribution, 4),
+            "bk_big_net": round(big_net, 4),
             "bk_big_buy_flag": 1.0 if big_net > 0 else 0.0,
             "bk_concentration": round(conc, 4),
-            "bk_top_buyer_net_share": round(top_buyer_net / total_vol, 4),
+            "bk_top_buyer_net_share": round(top_buyer_net, 4),
             "bk_num_net_buyers": float(len(pos)),
             "bk_num_net_sellers": float(len(neg)),
-            "bk_dominant_broker_net": round(float(nets.get(dominant, 0.0)), 2),
+            "bk_dominant_broker_net": round(dominant_net, 4),
         })
 
     feat = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)

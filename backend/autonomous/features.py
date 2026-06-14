@@ -192,7 +192,7 @@ def detect_regime(index_frame: pd.DataFrame, breadth_ratio: Optional[float] = No
         }
 
     close = prepared["close"]
-    returns = close.pct_change().fillna(0.0)
+    returns = close.pct_change(fill_method=None).fillna(0.0)
     ema_21 = ema(close, 21)
     ema_55 = ema(close, 55)
     trend_score = 50.0 + np.clip(((close.iloc[-1] / max(ema_55.iloc[-1], 1e-9)) - 1) * 250, -25, 25)
@@ -251,7 +251,7 @@ def compute_macro_correlation_signal(
     if prepared.empty:
         return 50.0, [], {"remittance_tailwind": 0.0, "policy_rate_trend": 0.0, "commodity_pressure": 0.0, "crypto_sentiment": 0.0}, "Neutral"
 
-    stock_returns = prepared.set_index("date")["close"].pct_change().dropna()
+    stock_returns = prepared.set_index("date")["close"].pct_change(fill_method=None).dropna()
     signals: list[dict[str, Any]] = []
     score = 50.0
     aggregates = {
@@ -273,7 +273,7 @@ def compute_macro_correlation_signal(
         macro_prepared = prepare_price_frame(macro_frame)
         if macro_prepared.empty:
             continue
-        macro_series = macro_prepared.set_index("date")["close"].pct_change().dropna()
+        macro_series = macro_prepared.set_index("date")["close"].pct_change(fill_method=None).dropna()
         aligned = stock_returns.to_frame("stock").join(macro_series.rename("macro"), how="inner")
         if len(aligned) < 15:
             continue
@@ -333,10 +333,10 @@ def build_feature_frame(
 
     feature_frame = prepared[["date", "open", "high", "low", "close", "volume", "turnover"]].copy()
     feature_frame["symbol"] = symbol
-    feature_frame["return_1d"] = feature_frame["close"].pct_change().fillna(0.0)
+    feature_frame["return_1d"] = feature_frame["close"].pct_change(fill_method=None).fillna(0.0)
 
     for window in LAG_WINDOWS:
-        feature_frame[f"return_{window}d"] = feature_frame["close"].pct_change(window)
+        feature_frame[f"return_{window}d"] = feature_frame["close"].pct_change(window, fill_method=None)
         feature_frame[f"volatility_{window}d"] = feature_frame["return_1d"].rolling(window, min_periods=2).std(ddof=0)
         feature_frame[f"volume_mean_{window}d"] = feature_frame["volume"].rolling(window, min_periods=1).mean()
         feature_frame[f"volume_ratio_{window}d"] = feature_frame["volume"] / feature_frame[f"volume_mean_{window}d"].replace(0, np.nan)
@@ -387,18 +387,18 @@ def build_feature_frame(
 
     if sector_peer_frame is not None and not sector_peer_frame.empty:
         sector_prepared = prepare_price_frame(sector_peer_frame)
-        sector_prepared["sector_return_1d"] = sector_prepared["close"].pct_change().fillna(0.0)
+        sector_prepared["sector_return_1d"] = sector_prepared["close"].pct_change(fill_method=None).fillna(0.0)
         sector_reference = sector_prepared[["date", "sector_return_1d", "close"]].rename(
             columns={"close": "sector_close"}
         )
         feature_frame = feature_frame.merge(sector_reference, on="date", how="left")
         feature_frame["relative_strength_20d"] = (
-            feature_frame["return_20d"] - feature_frame["sector_close"].pct_change(20)
+            feature_frame["return_20d"] - feature_frame["sector_close"].ffill().pct_change(20, fill_method=None)
         )
 
     if market_frame is not None and not market_frame.empty:
         market_prepared = prepare_price_frame(market_frame)
-        market_prepared["market_return_1d"] = market_prepared["close"].pct_change().fillna(0.0)
+        market_prepared["market_return_1d"] = market_prepared["close"].pct_change(fill_method=None).fillna(0.0)
         market_reference = market_prepared[["date", "market_return_1d"]]
         feature_frame = feature_frame.merge(market_reference, on="date", how="left")
         for window in (5, 20, 60):
@@ -454,7 +454,7 @@ def build_feature_frame(
             "npl_ratio",
             "casa_ratio",
         ):
-            feature_frame[column] = feature_frame[column].ffill().fillna(0.0)
+            feature_frame[column] = pd.to_numeric(feature_frame[column], errors="coerce").ffill().fillna(0.0)
 
     if sentiment_frame is not None and not sentiment_frame.empty:
         sentiment_prepared = sentiment_frame.copy()
@@ -482,9 +482,9 @@ def build_feature_frame(
             feature_frame = feature_frame.merge(series, on="date", how="left")
             close_column = f"{series_name.lower()}_close"
             feature_frame[close_column] = feature_frame[close_column].ffill()
-            feature_frame[f"{series_name.lower()}_return_1d"] = feature_frame[close_column].pct_change().fillna(0.0)
+            feature_frame[f"{series_name.lower()}_return_1d"] = feature_frame[close_column].pct_change(fill_method=None).fillna(0.0)
             for window in (5, 20, 60):
-                feature_frame[f"{series_name.lower()}_return_{window}d"] = feature_frame[close_column].pct_change(window)
+                feature_frame[f"{series_name.lower()}_return_{window}d"] = feature_frame[close_column].pct_change(window, fill_method=None)
                 feature_frame[f"{series_name.lower()}_corr_{window}d"] = feature_frame["return_1d"].rolling(window, min_periods=5).corr(
                     feature_frame[f"{series_name.lower()}_return_1d"]
                 )
