@@ -710,6 +710,9 @@ class ContextualMetaLearner:
         self.is_trained = False
 
     def train(self, base_frame: pd.DataFrame, context_frame: pd.DataFrame, target_frame: pd.DataFrame) -> None:
+        # Always build a fresh scaler here — when the suite is loaded from an older
+        # pickle, this instance was unpickled without __init__ so it may lack .scaler.
+        self.scaler = StandardScaler()
         self.context_columns = [column for column in context_frame.columns if pd.api.types.is_numeric_dtype(context_frame[column])]
         features = pd.concat([base_frame, context_frame[self.context_columns]], axis=1).fillna(0.0)
         self.feature_names = list(features.columns)

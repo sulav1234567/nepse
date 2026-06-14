@@ -26,6 +26,7 @@ from typing import Any
 # LightGBM is fed numpy arrays at predict time (it was fit with column names) — the
 # values are identical; sklearn just nags about the missing names.
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*Downcasting.*")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -302,8 +303,12 @@ def main() -> None:
         LOGGER.info("Sleeping %.0f seconds before next cycle.", sleep_seconds)
         time.sleep(sleep_seconds)
 
-    if args.auto_disconnect:
+    # Only auto-disconnect on a SUCCESSFUL run — keep the session alive on failure
+    # so the traceback can be investigated.
+    if args.auto_disconnect and isinstance(result, dict) and result.get("status") == "ok":
         _disconnect_runtime()
+    elif args.auto_disconnect:
+        LOGGER.warning("Last cycle did not succeed — NOT auto-disconnecting so you can inspect the error.")
 
 
 if __name__ == "__main__":
