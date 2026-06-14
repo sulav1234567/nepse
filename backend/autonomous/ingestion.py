@@ -316,7 +316,10 @@ class DataIngestionService:
         market_payload = _run_sync(fetch_market_overview())
 
         stocks = stocks_payload.get("stocks", [])
-        now = datetime.utcnow()
+        # Daily bars must be date-aligned (midnight) so the live snapshot bar shares
+        # the same timestamp granularity as the archive bars — otherwise we get
+        # duplicate same-day rows and mixed datetime formats that break backtesting.
+        now = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
         stock_records: list[dict[str, Any]] = []
         with self.database.session() as session:
             for stock in stocks:

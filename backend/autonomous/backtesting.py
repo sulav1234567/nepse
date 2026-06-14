@@ -76,7 +76,10 @@ def run_walk_forward_backtest(
     if not curve:
         return None
 
-    equity_series = pd.Series([point["equity"] for point in curve], index=pd.to_datetime([point["date"] for point in curve]))
+    equity_series = pd.Series(
+        [point["equity"] for point in curve],
+        index=pd.to_datetime([point["date"] for point in curve], format="ISO8601"),
+    )
     returns = pd.Series(realized_returns)
     annualized_return = float((equity_series.iloc[-1] ** (252 / max(len(curve), 1))) - 1) if len(curve) > 1 else 0.0
     sharpe_ratio = float(np.sqrt(252 / max(rebalance_step, 1)) * returns.mean() / max(returns.std(ddof=0), 1e-9)) if not returns.empty else 0.0
