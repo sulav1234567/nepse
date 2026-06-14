@@ -300,6 +300,8 @@ class AutonomousResearchPlatform:
             sector = str(price_frame["sector"].iloc[-1]) if "sector" in price_frame.columns else "Others"
             fundamentals = fundamentals_all[fundamentals_all["symbol"] == symbol] if not fundamentals_all.empty and "symbol" in fundamentals_all.columns else pd.DataFrame()
             news = self._load_news(symbol)
+            from .broker_features import build_symbol_broker_features
+            broker_frame = build_symbol_broker_features(symbol)
             feature_frames[symbol] = build_feature_frame(
                 symbol=symbol,
                 price_frame=price_frame,
@@ -308,6 +310,7 @@ class AutonomousResearchPlatform:
                 macro_frames=macro_frames,
                 sentiment_frame=news.rename(columns={"published_at": "date"}) if not news.empty else pd.DataFrame(),
                 market_frame=index_frame,
+                broker_frame=broker_frame if not broker_frame.empty else None,
             )
         return feature_frames
 
@@ -525,6 +528,8 @@ class AutonomousResearchPlatform:
             sentiment_value = self.model_suite.sentiment.score_articles(news_frame)
             liquidity_score = self._liquidity_score(price_frame)
 
+            from .broker_features import build_symbol_broker_features
+            broker_frame = build_symbol_broker_features(symbol)
             feature_frame = build_feature_frame(
                 symbol=symbol,
                 price_frame=price_frame,
@@ -533,6 +538,7 @@ class AutonomousResearchPlatform:
                 macro_frames=macro_frames,
                 sentiment_frame=news_frame.rename(columns={"published_at": "date"}) if not news_frame.empty else pd.DataFrame(),
                 market_frame=index_frame,
+                broker_frame=broker_frame if not broker_frame.empty else None,
             )
             if feature_frame.empty:
                 continue

@@ -1,0 +1,5 @@
+date,bk_net_accumulation,bk_net_distribution,bk_accumulation_ratio,bk_big_net,bk_big_buy_flag,bk_concentration,bk_top_buyer_net_share,bk_num_net_buyers,bk_num_net_sellers,bk_dominant_broker_net,bk_big_net_5d,bk_big_net_20d,bk_big_net_60d,bk_accum_trend_20d,bk_distribution_flag
+2026-05-04,5602.0,5633.0,-0.0018,332.0,1.0,0.3751,0.1905,20.0,20.0,-20.0,332.0,332.0,332.0,-0.0018,0.0
+2026-05-05,6983.0,7210.0,-0.0135,2079.0,1.0,0.2611,0.1626,21.0,19.0,-119.0,2411.0,2411.0,2411.0,-0.00765,0.0
+2026-05-06,4291.0,4495.0,-0.0162,936.0,1.0,0.3484,0.1969,25.0,14.0,-60.0,3347.0,3347.0,3347.0,-0.0105,0.0
+2026-05-07,5097.0,5031.0,0.0044,-1443.0,0.0,0.2857,0.1713,18.0,22.0,-10.0,1904.0,1904.0,1904.0,-0.006775,0.0

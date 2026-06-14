@@ -69,8 +69,47 @@ class BrokerAPI:
         self._paper_orders: list[TradeRecord] = []
         self._is_connected = False
 
+        # Autonomous live-trading guardrails. Off until the user explicitly opts in;
+        # the risk_gate additionally requires the global arm switch + limits.
+        self.autonomous_opt_in: bool = os.getenv("AUTONOMOUS_OPT_IN", "false").lower() in {"1", "true", "yes"}
+        self._trade_day: str = datetime.now().strftime("%Y-%m-%d")
+        self._trades_today: int = 0
+        self._realized_loss_today: float = 0.0
+
         if self.paper_mode:
             logger.info("Broker API in PAPER TRADING mode. No real orders will be placed.")
+
+    def _roll_day(self) -> None:
+        today = datetime.now().strftime("%Y-%m-%d")
+        if today != self._trade_day:
+            self._trade_day = today
+            self._trades_today = 0
+            self._realized_loss_today = 0.0
+
+    def _gate_autonomous_order(self, amount: float, *, is_exit: bool) -> tuple[bool, str]:
+        """Apply the fail-closed risk gate to an AUTONOMOUS live order.
+
+        Exits (sells that reduce risk) are allowed as long as the system is armed
+        and the kill-switch is off; new exposure (buys) faces the full gate.
+        """
+        from .risk_gate import check_live_execution
+
+        self._roll_day()
+        if is_exit:
+            # De-risking: ignore per-order/daily caps so stop-losses always run,
+            # but still require arm + opt-in + no kill-switch.
+            decision = check_live_execution(
+                order_npr=1.0, trades_today=0, realized_loss_today_npr=0.0,
+                user_opted_in=self.autonomous_opt_in,
+            )
+        else:
+            decision = check_live_execution(
+                order_npr=amount,
+                trades_today=self._trades_today,
+                realized_loss_today_npr=self._realized_loss_today,
+                user_opted_in=self.autonomous_opt_in,
+            )
+        return decision.allowed, decision.reason
 
     # ─── Connection ──────────────────────────────────────────────────────────
 
@@ -144,10 +183,18 @@ class BrokerAPI:
         quantity: int,
         price: float,
         notes: str = "",
+        autonomous: bool = False,
     ) -> TradeRecord:
-        """Place a buy order."""
+        """Place a buy order. Set autonomous=True for agent-initiated (unattended) orders."""
         amount = quantity * price
         timestamp = datetime.now().isoformat()
+
+        # Autonomous LIVE buys must clear the fail-closed risk gate.
+        if autonomous and not self.paper_mode:
+            ok, reason = self._gate_autonomous_order(amount, is_exit=False)
+            if not ok:
+                logger.warning("Autonomous live BUY blocked by risk gate: %s", reason)
+                return TradeRecord("", symbol, "BUY", quantity, price, amount, "BLOCKED", timestamp, notes=f"Risk gate: {reason}")
 
         if self.paper_mode:
             if self._paper_cash < amount:
@@ -172,6 +219,8 @@ class BrokerAPI:
 
         result = self.tms.place_buy_order(symbol, quantity, price)
         status = "PENDING" if result.success else "FAILED"
+        if result.success and autonomous:
+            self._trades_today += 1
         return TradeRecord(
             trade_id=result.order_id or "",
             symbol=symbol,
@@ -191,10 +240,18 @@ class BrokerAPI:
         quantity: int,
         price: float,
         notes: str = "",
+        autonomous: bool = False,
     ) -> TradeRecord:
-        """Place a sell order."""
+        """Place a sell order. Set autonomous=True for agent-initiated (unattended) orders."""
         amount = quantity * price
         timestamp = datetime.now().isoformat()
+
+        # Autonomous LIVE sells (exits) must clear the gate (arm + opt-in + kill-switch).
+        if autonomous and not self.paper_mode:
+            ok, reason = self._gate_autonomous_order(amount, is_exit=True)
+            if not ok:
+                logger.warning("Autonomous live SELL blocked by risk gate: %s", reason)
+                return TradeRecord("", symbol, "SELL", quantity, price, amount, "BLOCKED", timestamp, notes=f"Risk gate: {reason}")
 
         if self.paper_mode:
             held = self._paper_portfolio.get(symbol, 0.0)

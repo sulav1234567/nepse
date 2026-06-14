@@ -325,6 +325,7 @@ def build_feature_frame(
     macro_frames: Optional[dict[str, pd.DataFrame]] = None,
     sentiment_frame: Optional[pd.DataFrame] = None,
     market_frame: Optional[pd.DataFrame] = None,
+    broker_frame: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     prepared = prepare_price_frame(price_frame)
     if prepared.empty:
@@ -487,6 +488,16 @@ def build_feature_frame(
                 feature_frame[f"{series_name.lower()}_corr_{window}d"] = feature_frame["return_1d"].rolling(window, min_periods=5).corr(
                     feature_frame[f"{series_name.lower()}_return_1d"]
                 )
+
+    # Broker-intelligence: accumulation/distribution by (big) brokers. The signal
+    # persists between trading days, so forward-fill across gaps, then zero-fill
+    # the leading region before any broker data exists.
+    if broker_frame is not None and not broker_frame.empty:
+        broker_prepared = broker_frame.copy()
+        broker_prepared["date"] = pd.to_datetime(broker_prepared["date"], errors="coerce")
+        feature_frame = feature_frame.merge(broker_prepared, on="date", how="left")
+        broker_cols = [c for c in broker_prepared.columns if c != "date"]
+        feature_frame[broker_cols] = feature_frame[broker_cols].ffill().fillna(0.0)
 
     feature_frame["future_close_7d"] = feature_frame["close"].shift(-7)
     feature_frame["future_close_30d"] = feature_frame["close"].shift(-30)

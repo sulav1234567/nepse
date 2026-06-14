@@ -85,6 +85,16 @@ class Settings(BaseSettings):
     agent_min_trade_npr: float = 5000.0    # minimum trade amount in NPR
     agent_max_drawdown_pct: float = 15.0   # halt if portfolio drops > this %
 
+    # ── Autonomous LIVE execution (Phase 4) — GATED, OFF by default ───────────
+    # Live autonomous trading places REAL orders without the user present. It is
+    # refused unless ALL of these are explicitly satisfied (see broker/risk_gate.py).
+    # Keep OFF until you have confirmed it is permissible for your broker accounts.
+    autonomous_live_trading_enabled: bool = False   # master arm switch
+    autonomous_kill_switch: bool = False            # set True to halt immediately
+    autonomous_max_order_npr: float = 25000.0       # cap per single live order
+    autonomous_max_trades_per_day: int = 5          # daily order count cap
+    autonomous_daily_loss_limit_npr: float = 10000.0  # halt live trading past this loss
+
     def ensure_directories(self) -> None:
         """Create runtime directories used by the platform when missing."""
         for path_value in (

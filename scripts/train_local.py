@@ -167,6 +167,7 @@ def build_features_for_symbol(
     """Build the autonomous feature frame for one symbol (full external context)."""
     try:
         from backend.autonomous.features import build_feature_frame
+        from backend.autonomous.broker_features import build_symbol_broker_features
 
         price_frame = df.copy()
         if "turnover" not in price_frame.columns:
@@ -181,6 +182,8 @@ def build_features_for_symbol(
         ):
             fundamentals = fundamentals_all[fundamentals_all["symbol"] == symbol]
 
+        broker_frame = build_symbol_broker_features(symbol)
+
         feature_frame = build_feature_frame(
             symbol=symbol,
             price_frame=price_frame,
@@ -188,6 +191,7 @@ def build_features_for_symbol(
             sector_peer_frame=(sector_frames or {}).get(sector),
             macro_frames=macro_frames or None,
             market_frame=index_frame if (index_frame is not None and not index_frame.empty) else None,
+            broker_frame=broker_frame if not broker_frame.empty else None,
         )
         if feature_frame is not None and not feature_frame.empty:
             if "sector" not in feature_frame.columns:

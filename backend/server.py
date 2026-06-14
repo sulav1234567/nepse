@@ -30,6 +30,7 @@ from .database import connect_to_mongodb, close_mongodb, UserManager
 from .auth import AuthService, get_current_user
 from .autonomous.api import router as autonomous_router
 from .autonomous.service import get_research_platform
+from .broker.api import router as broker_router
 
 import numpy as np
 import pandas as pd
@@ -53,6 +54,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(autonomous_router)
+app.include_router(broker_router)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -497,7 +497,7 @@ class AutonomousTradingAgent:
                     # Partial exit at target 1: sell half
                     partial_units = max(1, pos.units // 2)
                     logger.info("Partial exit: selling %d units of %s at T1 %.2f", partial_units, pos.symbol, cmp)
-                    self.broker.sell(pos.symbol, partial_units, cmp, notes="Partial exit at T1")
+                    self.broker.sell(pos.symbol, partial_units, cmp, notes="Partial exit at T1", autonomous=True)
                     pos.units -= partial_units
                     pos.target_1 = pos.target_2   # now wait for T2 with remainder
                     self.journal.log_position(pos)
@@ -505,7 +505,7 @@ class AutonomousTradingAgent:
 
                 if reason:
                     logger.info("Exiting %s: %s", pos.symbol, reason)
-                    trade = self.broker.sell(pos.symbol, pos.units, exit_price, notes=reason)
+                    trade = self.broker.sell(pos.symbol, pos.units, exit_price, notes=reason, autonomous=True)
                     pos.exit_price = exit_price
                     pos.exit_date = datetime.now().isoformat()
                     pos.realized_pnl = round((exit_price - pos.entry_price) * pos.units, 2)
@@ -574,6 +574,7 @@ class AutonomousTradingAgent:
                 quantity=units,
                 price=sig.cmp,
                 notes=f"ML: {sig.action}, prob={sig.rise_probability:.1f}%, R:R={sig.risk_reward:.2f}",
+                autonomous=True,
             )
 
             if trade.status in ("COMPLETE", "PENDING"):
@@ -734,7 +735,7 @@ class AutonomousTradingAgent:
             for pos in list(self._open_positions):
                 if pos.symbol == symbol:
                     cmp = pos.current_price or pos.entry_price
-                    trade = self.broker.sell(pos.symbol, pos.units, cmp, notes=reason)
+                    trade = self.broker.sell(pos.symbol, pos.units, cmp, notes=reason, autonomous=True)
                     pos.exit_price = cmp
                     pos.exit_date = datetime.now().isoformat()
                     pos.realized_pnl = round((cmp - pos.entry_price) * pos.units, 2)

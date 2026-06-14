@@ -11,13 +11,15 @@ import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer
 from .database import UserManager
+from .security import get_jwt_secret
 
 logger = logging.getLogger("nepse-alpha")
 
-# Configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "cJlTdvfa89-D-Muf-drMJcQkRUqwB1NB48t4gBbozDc")
+# Configuration — signing key resolved via security.get_jwt_secret(), which fails
+# closed in production (no committed fallback secret an attacker could forge with).
+SECRET_KEY = get_jwt_secret()
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 720  # 12 hours
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "720"))  # default 12h
 
 # Bcrypt configuration
 BCRYPT_ROUNDS = 12

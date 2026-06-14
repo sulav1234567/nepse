@@ -61,10 +61,10 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  // Redirect to login if not authenticated
+  // Send guests to the public landing page (which links to login/register).
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.push('/auth/login');
+      router.replace('/landing');
     }
   }, [isAuthenticated, isLoading, router]);
 
