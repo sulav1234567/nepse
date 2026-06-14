@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import logging
 import sys
@@ -74,20 +75,28 @@ def existing_dates(symbol: str) -> set[str]:
         return set()
 
 
-def fetch_floorsheet(client: httpx.Client, symbol: str, date: str, retries: int = 3) -> list[dict] | None:
+async def fetch_floorsheet(
+    client: httpx.AsyncClient, sem: asyncio.Semaphore, symbol: str, date: str, retries: int = 4
+) -> tuple[str, list[dict] | None]:
+    """Fetch one symbol-day under the concurrency semaphore, with backoff on 429/errors."""
     for attempt in range(retries):
-        try:
-            resp = client.get(API, params={"symbol": symbol, "date": date, "page": 1}, timeout=20.0)
-            if resp.status_code == 200:
-                data = resp.json()
-                return data if isinstance(data, list) else []
-            if resp.status_code == 404:
-                return []
-            logger.debug("%s %s → HTTP %s", symbol, date, resp.status_code)
-        except Exception as exc:
-            logger.debug("%s %s attempt %d failed: %s", symbol, date, attempt + 1, exc)
-        time.sleep(1.0 + attempt)
-    return None
+        async with sem:
+            try:
+                resp = await client.get(API, params={"symbol": symbol, "date": date, "page": 1}, timeout=25.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return date, (data if isinstance(data, list) else [])
+                if resp.status_code == 404:
+                    return date, []
+                if resp.status_code == 429:  # rate limited — back off harder
+                    logger.warning("Rate limited (429) on %s %s; backing off.", symbol, date)
+                    await asyncio.sleep(5.0 * (attempt + 1))
+                    continue
+                logger.debug("%s %s → HTTP %s", symbol, date, resp.status_code)
+            except Exception as exc:
+                logger.debug("%s %s attempt %d failed: %s", symbol, date, attempt + 1, exc)
+        await asyncio.sleep(1.0 + attempt)
+    return date, None
 
 
 def aggregate(rows: list[dict]) -> list[dict]:
@@ -140,16 +149,31 @@ def append_rows(symbol: str, date: str, agg: list[dict]) -> None:
             w.writerow({"symbol": symbol, "date": date, **row})
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Scrape broker floorsheet → per-broker daily net positions.")
-    ap.add_argument("--days", type=int, default=30, help="Backfill the most recent N trading days.")
-    ap.add_argument("--start", type=str, default=None, help="Start date YYYY-MM-DD (overrides --days).")
-    ap.add_argument("--end", type=str, default=None, help="End date YYYY-MM-DD.")
-    ap.add_argument("--symbols", type=str, default=None, help="Comma-separated symbols (default: all).")
-    ap.add_argument("--max-symbols", type=int, default=None)
-    ap.add_argument("--sleep", type=float, default=0.5, help="Seconds between requests (be polite).")
-    args = ap.parse_args()
+async def scrape_symbol(
+    client: httpx.AsyncClient, sem: asyncio.Semaphore, symbol: str, dates: list[str]
+) -> int:
+    """Fetch all missing dates for one symbol concurrently, then write them in order.
 
+    Writes happen after the concurrent gather (single-threaded per symbol), so there
+    are no file races.
+    """
+    have = existing_dates(symbol)
+    todo = [d for d in dates if d not in have]
+    if not todo:
+        return 0
+    results = await asyncio.gather(*(fetch_floorsheet(client, sem, symbol, d) for d in todo))
+    written = 0
+    for date, rows in sorted(results, key=lambda r: r[0]):
+        if rows is None:
+            logger.warning("Giving up on %s %s after retries.", symbol, date)
+            continue
+        if rows:
+            append_rows(symbol, date, aggregate(rows))
+            written += 1
+    return written
+
+
+async def run(args: argparse.Namespace) -> None:
     dates = trading_dates()
     if not dates:
         logger.error("No trading dates found (need %s).", INDEX_CSV)
@@ -166,29 +190,36 @@ def main() -> None:
         symbols = symbols[: args.max_symbols]
 
     total = len(symbols) * len(dates)
-    logger.info("Backfill: %d symbols × %d dates = %d (symbol,date) pairs. Resumable.", len(symbols), len(dates), total)
+    logger.info(
+        "Backfill: %d symbols × %d dates = %d pairs · concurrency=%d. Resumable.",
+        len(symbols), len(dates), total, args.concurrency,
+    )
 
-    done = 0
+    sem = asyncio.Semaphore(args.concurrency)
     fetched = 0
-    with httpx.Client(headers=HEADERS, verify=True) as client:
-        for symbol in symbols:
-            have = existing_dates(symbol)
-            for date in dates:
-                done += 1
-                if date in have:
-                    continue
-                rows = fetch_floorsheet(client, symbol, date)
-                if rows is None:
-                    logger.warning("Giving up on %s %s after retries.", symbol, date)
-                    continue
-                if rows:
-                    append_rows(symbol, date, aggregate(rows))
-                    fetched += 1
-                time.sleep(args.sleep)
-            if symbols.index(symbol) % 10 == 0:
-                logger.info("Progress: %d/%d pairs, %d days fetched, current=%s", done, total, fetched, symbol)
+    t0 = time.time()
+    limits = httpx.Limits(max_connections=args.concurrency + 4, max_keepalive_connections=args.concurrency)
+    async with httpx.AsyncClient(headers=HEADERS, verify=True, limits=limits) as client:
+        for i, symbol in enumerate(symbols, 1):
+            fetched += await scrape_symbol(client, sem, symbol, dates)
+            if i % 5 == 0 or i == len(symbols):
+                rate = fetched / max(time.time() - t0, 1)
+                logger.info("Progress: %d/%d symbols, %d days fetched (%.1f/s), last=%s", i, len(symbols), fetched, rate, symbol)
 
     logger.info("Done. %d symbol-days fetched into %s", fetched, OUT_DIR)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Scrape broker floorsheet → per-broker daily net positions.")
+    ap.add_argument("--days", type=int, default=30, help="Backfill the most recent N trading days.")
+    ap.add_argument("--start", type=str, default=None, help="Start date YYYY-MM-DD (overrides --days).")
+    ap.add_argument("--end", type=str, default=None, help="End date YYYY-MM-DD.")
+    ap.add_argument("--symbols", type=str, default=None, help="Comma-separated symbols (default: all).")
+    ap.add_argument("--max-symbols", type=int, default=None)
+    ap.add_argument("--concurrency", type=int, default=10, help="Concurrent requests (raise for speed, lower if rate-limited).")
+    ap.add_argument("--sleep", type=float, default=0.0, help="(Deprecated; concurrency controls pacing.)")
+    args = ap.parse_args()
+    asyncio.run(run(args))
 
 
 if __name__ == "__main__":
