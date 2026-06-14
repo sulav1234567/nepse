@@ -24,7 +24,6 @@ from .predictions import (
 )
 from .portfolio import optimize_portfolio
 from .nepse_fetcher import fetch_all_stocks, fetch_market_overview, fetch_nepse_index_history, fetch_current_nepse_index
-from .deterministic import stable_rng
 from .market_intelligence import build_market_intelligence
 from .index_analysis import analyze_nepse_index
 from .database import connect_to_mongodb, close_mongodb, UserManager
@@ -33,6 +32,8 @@ from .autonomous.api import router as autonomous_router
 from .autonomous.service import get_research_platform
 
 import numpy as np
+import pandas as pd
+from pathlib import Path
 from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO)
@@ -114,59 +115,56 @@ def convert_to_stock_data(raw_stock: dict[str, Any]) -> StockData:
     )
 
 
-def generate_history_for_stock(stock_data: StockData) -> list[HistoricalPrice]:
-    """Generate synthetic historical prices for technical analysis when real data is unavailable."""
-    _volatility_map = {
-        "Hydropower": 0.035, "Commercial Bank": 0.018,
-        "Development Bank": 0.022, "Insurance": 0.022,
-        "Microfinance": 0.028, "Manufacturing": 0.015,
-        "Hotel & Tourism": 0.030,
-    }
-    rng = stable_rng(
-        "history",
-        stock_data.symbol,
-        stock_data.cmp,
-        stock_data.previous_close,
-        stock_data.volume,
-        stock_data.high_52w,
-        stock_data.low_52w,
-    )
-    data: list[HistoricalPrice] = []
-    base_price = stock_data.cmp * 0.85
-    volatility = _volatility_map.get(stock_data.sector, 0.025)
-    days = 60
-    now = datetime.now()
+_MARKET_CSV_DIR = Path(__file__).resolve().parent.parent / "data" / "market" / "stocks"
 
-    for i in range(days, 0, -1):
-        date = now - timedelta(days=i)
-        if date.weekday() == 5:
-            continue
-        trend = (days - i) / days * 0.15
-        noise = (rng.random() - 0.48) * volatility * 2
-        day_return = trend / days + noise
-        base_price *= (1 + day_return)
-        high = base_price * (1 + rng.random() * volatility)
-        low = base_price * (1 - rng.random() * volatility)
-        open_p = low + rng.random() * (high - low)
-        close_p = low + rng.random() * (high - low)
-        volume = int(stock_data.avg_volume_20d * (0.6 + rng.random() * 0.9))
-        data.append(HistoricalPrice(
-            date=date.strftime("%Y-%m-%d"),
-            open=round(open_p, 2),
-            high=round(high, 2),
-            low=round(low, 2),
-            close=round(close_p, 2),
-            volume=volume,
-        ))
 
-    if data:
-        latest = data[-1]
-        latest.open = round(stock_data.open if stock_data.open > 0 else latest.open, 2)
-        latest.high = round(max(stock_data.high or latest.high, stock_data.cmp, latest.high), 2)
-        latest.low = round(min(stock_data.low or latest.low, stock_data.cmp, latest.low), 2)
-        latest.close = round(stock_data.cmp, 2)
-        latest.volume = int(stock_data.volume or latest.volume)
-    return data
+def load_real_history(stock_data: StockData, bars: int = 180) -> list[HistoricalPrice]:
+    """Load REAL OHLCV history for a stock from the local market CSV store.
+
+    No synthetic/fabricated prices: if there is no stored history for the symbol
+    we return an empty list and let callers report "data unavailable". When live
+    intraday data is newer than the last stored bar, we append/refresh today's bar
+    from the live quote (still real data, not invented).
+    """
+    csv_path = _MARKET_CSV_DIR / f"{stock_data.symbol.upper()}.csv"
+    history: list[HistoricalPrice] = []
+    if csv_path.exists():
+        try:
+            frame = pd.read_csv(csv_path).tail(bars)
+            for _, row in frame.iterrows():
+                close = float(row.get("close") or 0)
+                if close <= 0:
+                    continue
+                history.append(HistoricalPrice(
+                    date=str(row["date"])[:10],
+                    open=round(float(row.get("open") or close), 2),
+                    high=round(float(row.get("high") or close), 2),
+                    low=round(float(row.get("low") or close), 2),
+                    close=round(close, 2),
+                    volume=int(float(row.get("volume") or 0)),
+                ))
+        except Exception as exc:
+            logger.debug("Real history load failed for %s: %s", stock_data.symbol, exc)
+            history = []
+
+    # Fold in the live quote as the most recent bar (real data from the feed).
+    if stock_data.cmp and stock_data.cmp > 0:
+        today = datetime.now().strftime("%Y-%m-%d")
+        live_bar = HistoricalPrice(
+            date=today,
+            open=round(stock_data.open or stock_data.cmp, 2),
+            high=round(max(stock_data.high or stock_data.cmp, stock_data.cmp), 2),
+            low=round(min(stock_data.low or stock_data.cmp, stock_data.cmp), 2),
+            close=round(stock_data.cmp, 2),
+            volume=int(stock_data.volume or 0),
+        )
+        if history and history[-1].date == today:
+            history[-1] = live_bar
+        elif history and history[-1].date < today:
+            history.append(live_bar)
+        elif not history:
+            history.append(live_bar)
+    return history
 
 
 async def create_market_overview_from_data(data: dict[str, Any]) -> MarketOverview:
@@ -196,7 +194,7 @@ async def prepare_stocks_for_analysis(raw_stocks: list[dict]) -> tuple[list[Stoc
     for raw_stock in raw_stocks:
         try:
             stock = convert_to_stock_data(raw_stock)
-            hist = generate_history_for_stock(stock)
+            hist = load_real_history(stock)
             stocks.append(stock)
             histories[stock.symbol] = hist
         except Exception as e:
@@ -379,6 +377,10 @@ async def get_market_overview():
         "regime_confidence": regime.confidence,
         "source": market_data.get("source", "UNKNOWN"),
         "timestamp": market_data.get("timestamp"),
+        "market_state": data.get("market_state", "UNKNOWN"),
+        "is_live": data.get("is_live", False),
+        "is_stale": data.get("is_stale", False),
+        "as_of": data.get("as_of"),
         "intelligence": intelligence,
     }
 
@@ -509,7 +511,7 @@ async def get_all_stocks(sector: Optional[str] = None, sort_by: str = "fcs"):
     for raw_stock in raw_stocks:
         try:
             stock = convert_to_stock_data(raw_stock)
-            hist = generate_history_for_stock(stock)
+            hist = load_real_history(stock)
             analysis = analyze_stock(stock, hist, weights)
             
             results.append({
@@ -567,7 +569,7 @@ async def get_stock_analysis(symbol: str, tier: str = "daily"):
         "monthly": MONTHLY_WEIGHTS,
     }
     weights = weights_map.get(tier, LayerWeights())
-    hist = generate_history_for_stock(stock)
+    hist = load_real_history(stock)
     
     return analyze_stock(stock, hist, weights)
 
@@ -584,7 +586,7 @@ async def get_stock_history(symbol: str):
         raise HTTPException(status_code=404, detail=f"Stock {symbol} not found")
     
     stock = convert_to_stock_data(raw_stock)
-    hist = generate_history_for_stock(stock)
+    hist = load_real_history(stock)
     
     return [h.model_dump() for h in hist]
 
@@ -679,97 +681,224 @@ async def get_live_market():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# AI/ML PREDICTION ENDPOINTS
+# AI/ML PREDICTION ENDPOINTS — driven by the trained autonomous model suite.
+# No synthetic fallback: if the model has no signals, these return 503.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.get("/api/ai/predictions")
-async def get_ai_predictions(top: int = 20):
-    """
-    Get ML-powered stock rise predictions.
-    Uses ensemble of RandomForest + GradientBoosting + XGBoost.
-    Returns ranked predictions with probability, target, and AI reasoning.
-    """
-    from .nepse_fetcher import fetch_all_stocks
-    from .ml_predictor import predictor
+def _confidence_band(score: float) -> str:
+    if score >= 70:
+        return "HIGH"
+    if score >= 45:
+        return "MEDIUM"
+    return "LOW"
 
-    # Get latest stock data
+
+def _rise_probability(signal: str, confidence: float, return_7d: float) -> float:
+    """Map the suite's signal + confidence to a 0-100 rise probability."""
+    label = (signal or "").upper()
+    if "STRONG BUY" in label:
+        base = 50 + confidence * 0.45
+    elif "BUY" in label:
+        base = 50 + confidence * 0.32
+    elif "STRONG SELL" in label:
+        base = 50 - confidence * 0.45
+    elif "SELL" in label:
+        base = 50 - confidence * 0.32
+    else:
+        base = 50 + max(-8.0, min(8.0, return_7d)) * 1.2
+    return round(max(5.0, min(95.0, base)), 1)
+
+
+def _card_to_prediction(card, live_stock: dict, crash_risk: float, regime: str) -> dict:
+    cmp = float(live_stock.get("cmp") or live_stock.get("ltp") or 0)
+    votes = card.model_votes or []
+    if votes:
+        r7 = float(np.mean([v.predicted_return_7d for v in votes]))
+        r30 = float(np.mean([v.predicted_return_30d for v in votes]))
+        r90 = float(np.mean([v.predicted_return_90d for v in votes]))
+    else:
+        r7 = r30 = r90 = float(card.expected_return_percent)
+
+    support = float(card.technical.support or 0)
+    stop_loss = support if 0 < support < cmp else cmp * 0.95
+    target_7d = cmp * (1 + r7 / 100)
+    target_30d = cmp * (1 + r30 / 100)
+    upside = max(target_7d, target_30d) - cmp
+    downside = max(cmp - stop_loss, cmp * 0.005)
+
+    reasons = list(card.top_reasons or [])
+    warnings = list(card.warnings or [])
+    rise_prob = _rise_probability(card.overall_signal, card.confidence_score, r7)
+
+    technical = card.technical
+    key_drivers = [
+        {"feature": "RSI (14)", "value": round(technical.rsi_14, 1), "direction": "bullish" if technical.rsi_14 < 70 else "bearish", "importance": 0.8},
+        {"feature": "MACD histogram", "value": round(technical.macd_histogram, 3), "direction": "bullish" if technical.macd_histogram > 0 else "bearish", "importance": 0.7},
+        {"feature": "Bollinger position", "value": round(technical.bollinger_position, 2), "direction": "bullish" if technical.bollinger_position < 0.8 else "bearish", "importance": 0.5},
+        {"feature": "ADX", "value": round(technical.adx, 1), "direction": "bullish" if technical.adx > 20 else "neutral", "importance": 0.4},
+    ]
+
+    return {
+        "symbol": card.symbol,
+        "name": card.company_name,
+        "sector": card.sector,
+        "cmp": round(cmp, 2),
+        "changePercent": float(live_stock.get("changePercent") or 0),
+        "riseProbability": rise_prob,
+        "predictedChangePercent": round(r7, 2),
+        "predictedRsChange": round(cmp * r7 / 100, 2),
+        "predictedTarget": round(target_7d, 2),
+        "confidence": _confidence_band(card.confidence_score),
+        "risk": card.risk_level,
+        "action": card.overall_signal,
+        "recommendationSummary": "; ".join(reasons[:2]) or f"Model signal: {card.overall_signal}",
+        "keyDrivers": key_drivers,
+        "reasoning": " · ".join(reasons + warnings) or f"Trained ensemble signal {card.overall_signal} with {card.confidence_score:.0f}% confidence.",
+        "modelScores": {v.model_name: round(v.confidence, 1) for v in votes},
+        "buyRangeLow": round(min(cmp, max(stop_loss * 1.01, cmp * 0.97)), 2),
+        "buyRangeHigh": round(cmp * 1.01, 2),
+        "idealEntry": round(cmp, 2),
+        "stopLoss": round(stop_loss, 2),
+        "sellRangeLow": round(min(target_7d, target_30d), 2),
+        "sellRangeHigh": round(max(target_7d, target_30d), 2),
+        "expectedProfitRs": round(upside, 2),
+        "expectedProfitPercent": round(upside / cmp * 100, 2) if cmp > 0 else 0.0,
+        "expectedDownsideRs": round(downside, 2),
+        "expectedDownsidePercent": round(downside / cmp * 100, 2) if cmp > 0 else 0.0,
+        "riskRewardRatio": round(upside / downside, 2) if downside > 0 else 0.0,
+        "holdDaysMin": 7,
+        "holdDaysMax": 30,
+        "timeToTargetDays": 30 if r30 > r7 else 7,
+        "marketAlignment": regime,
+        "crashRisk": round(crash_risk, 1),
+        "exitTrigger": f"Close below stop loss Rs.{stop_loss:,.0f}",
+        "signalAsOf": card.as_of.isoformat(),
+        "expectedReturn90d": round(r90, 2),
+    }
+
+
+async def _trained_model_predictions() -> tuple[list[dict], dict, Any]:
+    """Build prediction rows from the trained suite's signals + live prices."""
+    platform = get_research_platform()
+    cards = platform.signal_cards(limit=500)
+    if not cards:
+        raise HTTPException(
+            status_code=503,
+            detail="The trained model has no signals yet. Run POST /api/autonomous/signals/refresh after ingestion and training.",
+        )
+
     data = await fetch_all_stocks()
     stocks = data.get("stocks", [])
+    if not stocks:
+        raise HTTPException(status_code=503, detail="Live market data is unavailable right now. Refusing to serve stale or fabricated prices.")
+    live_map = {str(s.get("symbol", "")).upper(): s for s in stocks}
+
     market_data = await fetch_market_overview()
     market = await create_market_overview_from_data(market_data.get("data", {}))
     regime = detect_regime(market)
     market_intelligence = build_market_intelligence(market, stocks)
+    crash_risk = float(market_intelligence.get("crash_risk", 0))
 
-    predictor.ensure_trained(stocks)
-    predictions = predictor.predict(
-        stocks,
-        market_context_override={
-            "breadth_ratio": market_intelligence.get("breadth_ratio", 50) / 100,
-            "avg_change": market_intelligence.get("average_change", 0),
-            "interbank_rate": market.interbank_rate,
-            "sector_momentum": market.nepse_change_percent,
-            "market_change_percent": market.nepse_change_percent,
-            "up_volume_share": market_intelligence.get("up_volume_share", 50) / 100,
-        },
-        market_regime=regime.regime,
-        crash_risk=market_intelligence.get("crash_risk", 0),
-    )
+    predictions = []
+    for card in cards:
+        live_stock = live_map.get(card.symbol.upper())
+        if not live_stock:
+            continue
+        cmp = float(live_stock.get("cmp") or live_stock.get("ltp") or 0)
+        if cmp <= 0:
+            continue
+        predictions.append(_card_to_prediction(card, live_stock, crash_risk, regime.regime))
 
-    return {
-        "predictions": predictions[:top],
+    predictions.sort(key=lambda p: p["riseProbability"], reverse=True)
+    for rank, prediction in enumerate(predictions, start=1):
+        prediction["rank"] = rank
+
+    meta = {
         "totalStocks": len(stocks),
-        "dataSource": data.get("source", "DEMO"),
+        "dataSource": data.get("source", "UNKNOWN"),
         "timestamp": data.get("timestamp"),
-        "modelMetrics": predictor.get_model_metrics(),
-        "featureImportance": predictor.get_feature_importance(),
         "marketIntelligence": market_intelligence,
         "marketRegime": regime.regime,
+        "signalsAsOf": cards[0].as_of.isoformat(),
+    }
+    return predictions, meta, platform
+
+
+def _suite_feature_importance(platform, top_n: int = 20) -> list[dict]:
+    """Real feature importances averaged across the suite's fitted tree models."""
+    suite = platform.model_suite
+    cols = list(getattr(suite, "feature_cols", []) or [])
+    models = (getattr(suite.tree, "regressors", {}) or {}).get(7, [])
+    if not cols or not models:
+        return []
+    aggregate = np.zeros(len(cols))
+    counted = 0
+    for model in models:
+        importances = getattr(model, "feature_importances_", None)
+        if importances is None or len(importances) != len(cols):
+            continue
+        values = np.asarray(importances, dtype=float)
+        total = values.sum()
+        if total > 0:
+            aggregate += values / total
+            counted += 1
+    if counted == 0:
+        return []
+    aggregate /= counted
+    ranked = sorted(zip(cols, aggregate), key=lambda item: item[1], reverse=True)[:top_n]
+    return [{"feature": name, "importance": round(float(value), 4)} for name, value in ranked]
+
+
+def _suite_model_metrics(platform) -> dict:
+    suite = platform.model_suite
+    return {
+        "model_version": suite.model_version,
+        "last_trained_at": suite.last_trained_at.isoformat() if suite.last_trained_at else None,
+        "accuracy": suite.metrics.get("accuracy_7d", 0.0),
+        "samples": suite.metrics.get("training_rows", 0),
+        "features": len(getattr(suite, "feature_cols", []) or []),
+        "training_time": 0.0,
+        **{k: round(float(v), 4) for k, v in suite.metrics.items()},
+    }
+
+
+@app.get("/api/ai/predictions")
+async def get_ai_predictions(top: int = 20):
+    """
+    Stock predictions computed by the TRAINED autonomous model suite
+    (ensemble + LSTM + TFT + meta-learner), joined with live prices.
+    """
+    predictions, meta, platform = await _trained_model_predictions()
+    return {
+        "predictions": predictions[:top],
+        "modelMetrics": _suite_model_metrics(platform),
+        "featureImportance": _suite_feature_importance(platform),
+        **meta,
     }
 
 
 @app.get("/api/ai/prediction/{symbol}")
 async def get_ai_prediction_detail(symbol: str):
-    """Get detailed ML prediction for a specific stock."""
-    from .nepse_fetcher import fetch_all_stocks
-    from .ml_predictor import predictor
-
-    data = await fetch_all_stocks()
-    stocks = data.get("stocks", [])
-
-    predictor.ensure_trained(stocks)
-    predictions = predictor.predict(stocks)
-
+    """Detailed trained-model prediction for a specific stock."""
+    predictions, _, _ = await _trained_model_predictions()
     result = next((p for p in predictions if p["symbol"].upper() == symbol.upper()), None)
     if not result:
-        return {"error": f"Stock {symbol} not found"}
+        raise HTTPException(status_code=404, detail=f"The trained model has no signal for {symbol}.")
     return result
 
 
 @app.get("/api/ai/feature-importance")
 async def get_feature_importance():
-    """Get current ML feature importance rankings."""
-    from .nepse_fetcher import fetch_all_stocks
-    from .ml_predictor import predictor
-
-    data = await fetch_all_stocks()
-    predictor.ensure_trained(data.get("stocks", []))
-
-    return {
-        "features": predictor.get_feature_importance(),
-        "totalFeatures": 30,
-    }
+    """Feature importance from the trained suite's tree ensemble."""
+    platform = get_research_platform()
+    features = _suite_feature_importance(platform)
+    return {"features": features, "totalFeatures": len(getattr(platform.model_suite, "feature_cols", []) or [])}
 
 
 @app.get("/api/ai/model-metrics")
 async def get_model_metrics():
-    """Get ML model training and performance metrics."""
-    from .nepse_fetcher import fetch_all_stocks
-    from .ml_predictor import predictor
-
-    data = await fetch_all_stocks()
-    predictor.ensure_trained(data.get("stocks", []))
-
-    return predictor.get_model_metrics()
+    """Training and performance metrics of the trained autonomous model suite."""
+    return _suite_model_metrics(get_research_platform())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -778,21 +907,23 @@ async def get_model_metrics():
 
 @app.get("/api/health")
 async def health_check():
-    from .ml_predictor import predictor, HAS_XGBOOST
+    from .autonomous.models import HAS_XGBOOST, HAS_LIGHTGBM, HAS_TORCH
     autonomous_platform = get_research_platform()
     autonomous_status = autonomous_platform._status()
-    
+    suite = autonomous_platform.model_suite
+
     # Check if we can fetch live data
     stocks_data = await fetch_all_stocks()
     data_source = stocks_data.get("source", "UNKNOWN")
     stocks_count = stocks_data.get("count", 0)
-    
+
     return {
         "status": "operational",
         "version": "ULTIMATE-2.0-REALTIME",
         "stocks_loaded": stocks_count,
         "data_mode": f"LIVE DATA ONLY - Current source: {data_source}",
-        "ml_trained": predictor.is_trained,
+        "ml_trained": suite.model_version != "bootstrap",
+        "model_version": suite.model_version,
         "autonomous_platform": {
             "database_backend": autonomous_status.database_backend,
             "timescaledb_active": autonomous_status.timescaledb_active,
@@ -809,5 +940,7 @@ async def health_check():
             "filterpy": True,
             "statsmodels": True,
             "xgboost": HAS_XGBOOST,
+            "lightgbm": HAS_LIGHTGBM,
+            "torch": HAS_TORCH,
         }
     }

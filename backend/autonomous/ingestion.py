@@ -7,14 +7,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-import numpy as np
 import pandas as pd
 
-from ..deterministic import stable_rng
 from ..nepse_fetcher import fetch_all_stocks, fetch_market_overview, fetch_nepse_index_history
 from ..settings import Settings, get_settings
 from .storage import (
@@ -312,53 +310,6 @@ class DataIngestionService:
                 count += len(records)
         return count
 
-    def _bootstrap_history(self, stock: dict[str, Any], as_of: datetime) -> list[dict[str, Any]]:
-        rng = stable_rng("autonomous-bootstrap", stock.get("symbol"), stock.get("cmp"), stock.get("volume"))
-        days = self.settings.bootstrap_sequence_days
-        close = float(stock.get("cmp", 0.0) or 0.0)
-        previous_close = float(stock.get("previousClose", close) or close)
-        if close <= 0:
-            return []
-        volatility = 0.01 + min(0.06, abs(close - previous_close) / max(close, 1e-9))
-        base = close * (0.82 + rng.random() * 0.12)
-        records: list[dict[str, Any]] = []
-        for offset in range(days, 0, -1):
-            ts = as_of - timedelta(days=offset)
-            if ts.weekday() == 5:
-                continue
-            trend = (days - offset) / days * rng.uniform(-0.06, 0.16)
-            noise = rng.normal(0, volatility)
-            base *= max(0.4, 1 + trend / max(days / 2, 1) + noise)
-            high = base * (1 + abs(rng.normal(0.005, volatility / 2)))
-            low = base * (1 - abs(rng.normal(0.005, volatility / 2)))
-            open_price = low + rng.random() * max(high - low, 0.1)
-            close_price = low + rng.random() * max(high - low, 0.1)
-            volume = float(stock.get("avgVolume20d", stock.get("volume", 0.0)) or 0.0) * (0.6 + rng.random() * 0.8)
-            records.append(
-                {
-                    "symbol": str(stock.get("symbol", "")).upper(),
-                    "company_name": str(stock.get("name", stock.get("symbol", ""))),
-                    "sector": str(stock.get("sector", "Others")),
-                    "interval": "1d",
-                    "ts": ts,
-                    "open": round(open_price, 2),
-                    "high": round(max(high, open_price, close_price), 2),
-                    "low": round(min(low, open_price, close_price), 2),
-                    "close": round(close_price, 2),
-                    "volume": round(volume, 2),
-                    "turnover": round(volume * close_price, 2),
-                    "source": "SIMULATED_BOOTSTRAP",
-                }
-            )
-        if records:
-            records[-1]["close"] = round(close, 2)
-            records[-1]["open"] = round(float(stock.get("open", close) or close), 2)
-            records[-1]["high"] = round(float(stock.get("high", close) or close), 2)
-            records[-1]["low"] = round(float(stock.get("low", close) or close), 2)
-            records[-1]["volume"] = round(float(stock.get("volume", records[-1]["volume"]) or records[-1]["volume"]), 2)
-            records[-1]["turnover"] = round(float(stock.get("turnover", records[-1]["turnover"]) or records[-1]["turnover"]), 2)
-        return records
-
     def refresh_live_snapshot(self) -> dict[str, int]:
         stocks_payload = _run_sync(fetch_all_stocks())
         index_payload = _run_sync(fetch_nepse_index_history(days=self.settings.default_history_lookback_days))
@@ -367,12 +318,7 @@ class DataIngestionService:
         stocks = stocks_payload.get("stocks", [])
         now = datetime.utcnow()
         stock_records: list[dict[str, Any]] = []
-        bootstrap_records: list[dict[str, Any]] = []
         with self.database.session() as session:
-            existing_symbols = {
-                symbol
-                for (symbol,) in session.query(MarketBar.symbol).distinct().all()
-            }
             for stock in stocks:
                 close = float(stock.get("cmp", 0.0) or 0.0)
                 if close <= 0:
@@ -393,13 +339,11 @@ class DataIngestionService:
                         "source": str(stocks_payload.get("source", "LIVE")),
                     }
                 )
-                if self.settings.allow_bootstrap_simulation and str(stock.get("symbol", "")).upper() not in existing_symbols:
-                    bootstrap_records.extend(self._bootstrap_history(stock, now))
 
             self.database.bulk_upsert(
                 session,
                 MarketBar,
-                bootstrap_records + stock_records,
+                stock_records,
                 key_columns=["symbol", "interval", "ts"],
             )
 
@@ -457,7 +401,7 @@ class DataIngestionService:
 
         return {
             "stocks": len(stock_records),
-            "bootstrap_bars": len(bootstrap_records),
+            "bootstrap_bars": 0,
             "index_bars": len(index_payload.get("history", [])),
         }
 

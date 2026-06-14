@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     default_history_lookback_days: int = 520
     scheduler_timezone: str = "Asia/Kathmandu"
     timescaledb_enabled: bool = True
-    allow_bootstrap_simulation: bool = True
+    # Never fabricate simulated history bars for unknown symbols — synthetic
+    # data must not feed training or displayed signals.
+    allow_bootstrap_simulation: bool = False
 
     default_macro_series: list[str] = Field(
         default_factory=lambda: [

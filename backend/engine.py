@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 from filterpy.kalman import KalmanFilter
-from sklearn.cluster import KMeans
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from typing import Optional
 
@@ -19,7 +18,6 @@ from .models import (
     WarningFlags, FCSResult, FullAnalysis, CandlestickPattern,
     RecommendationPlan,
 )
-from .deterministic import stable_rng
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -600,57 +598,30 @@ def compute_ssil(stock: StockData, ind: TechnicalIndicators, df: pd.DataFrame = 
 # Uses scikit-learn K-Means for broker classification (simulated)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def simulate_broker_classification(stock: StockData) -> dict:
+def estimate_broker_market_ratio(stock: StockData) -> dict:
     """
-    Simulate broker classification using scikit-learn K-Means.
-    In production, this would cluster actual broker transaction data.
+    Estimate the Broker/Market Ratio (institutional participation proxy) from
+    REAL, observable market data only.
+
+    NEPSE does not publish per-broker category data on the public feeds, so we
+    derive an institutional-participation proxy from factors that genuinely
+    correlate with it — market capitalisation, traded liquidity (turnover vs
+    cap), intraday price stability, and blue-chip sector membership. No synthetic
+    broker transactions are fabricated.
     """
-    # Simulate broker features: [avg_trade_size, frequency, consistency]
-    n_brokers = 20
-    rng = stable_rng(
-        "broker",
-        stock.symbol,
-        stock.cmp,
-        stock.volume,
-        stock.change_percent,
-        stock.market_cap,
-    )
-
-    # Generate synthetic broker features
-    trade_sizes = rng.lognormal(mean=10, sigma=1.5, size=n_brokers)
-    frequencies = rng.exponential(scale=5, size=n_brokers)
-    consistency = rng.beta(a=2, b=5, size=n_brokers)
-
-    features = np.column_stack([trade_sizes, frequencies, consistency])
-
-    # K-Means clustering into 3 categories
-    kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
-    labels = kmeans.fit_predict(features)
-
-    # Sort clusters by avg trade size to assign Cat A/B/C
-    cluster_means = [np.mean(trade_sizes[labels == i]) for i in range(3)]
-    rank = np.argsort(cluster_means)[::-1]
-    cat_map = {rank[0]: "A", rank[1]: "B", rank[2]: "C"}
-
-    cats = [cat_map[l] for l in labels]
-    cat_a_count = cats.count("A")
-    cat_b_count = cats.count("B")
-    cat_c_count = cats.count("C")
-
-    # BMR = Category A volume share (weighted by market cap)
     cap_factor = min(1.0, stock.market_cap / 50e9)
     liquidity_factor = min(1.0, (stock.volume * max(stock.cmp, 1.0)) / max(stock.market_cap * 0.002, 1.0))
     stability_factor = max(0.0, 1.0 - min(abs(stock.change_percent), 10.0) / 10.0)
     blue_chip_bonus = 0.08 if stock.sector in ("Commercial Bank", "Hydropower", "Insurance") else 0.0
+
     bmr = round(
         min(
             80.0,
             max(
                 5.0,
-                cat_a_count / n_brokers * 45
-                + cap_factor * 20
-                + liquidity_factor * 15
-                + stability_factor * 10
+                cap_factor * 30
+                + liquidity_factor * 30
+                + stability_factor * 15
                 + blue_chip_bonus * 100,
             ),
         )
@@ -658,17 +629,16 @@ def simulate_broker_classification(stock: StockData) -> dict:
 
     return {
         "bmr": max(5, bmr),
-        "cat_a": cat_a_count,
-        "cat_b": cat_b_count,
-        "cat_c": cat_c_count,
-        "total_brokers": n_brokers,
+        "cap_factor": round(cap_factor, 3),
+        "liquidity_factor": round(liquidity_factor, 3),
+        "stability_factor": round(stability_factor, 3),
     }
 
 
 def compute_gtbil(stock: StockData, ind: TechnicalIndicators) -> tuple[float, float, list[str]]:
     """Graph Theory & Broker Intelligence Layer."""
     details: list[str] = []
-    broker_data = simulate_broker_classification(stock)
+    broker_data = estimate_broker_market_ratio(stock)
     bmr = broker_data["bmr"]
 
     score = 50.0
@@ -696,9 +666,8 @@ def compute_gtbil(stock: StockData, ind: TechnicalIndicators) -> tuple[float, fl
         details.append("OBV leading — smart money absorbing supply")
 
     details.append(
-        f"Broker mix: Cat-A={broker_data['cat_a']}, "
-        f"Cat-B={broker_data['cat_b']}, Cat-C={broker_data['cat_c']} "
-        f"(K-Means classified)"
+        f"Participation proxy from real data — liquidity {broker_data['liquidity_factor']}, "
+        f"cap {broker_data['cap_factor']}, stability {broker_data['stability_factor']}"
     )
 
     return max(0.0, min(100.0, score)), float(bmr), details

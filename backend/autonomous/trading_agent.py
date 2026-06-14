@@ -290,16 +290,33 @@ class AutonomousTradingAgent:
             logger.debug("Local history load failed for %s: %s", symbol, exc)
             return []
 
+    @staticmethod
+    def _rise_probability(signal: str, confidence: float, return_7d: float) -> float:
+        """Map the trained suite's signal + confidence to a 0-100 rise probability."""
+        label = (signal or "").upper()
+        if "STRONG BUY" in label:
+            base = 50 + confidence * 0.45
+        elif "BUY" in label:
+            base = 50 + confidence * 0.32
+        elif "STRONG SELL" in label:
+            base = 50 - confidence * 0.45
+        elif "SELL" in label:
+            base = 50 - confidence * 0.32
+        else:
+            base = 50 + max(-8.0, min(8.0, return_7d)) * 1.2
+        return round(max(5.0, min(95.0, base)), 1)
+
     def scan_market(self) -> list[AgentSignal]:
         """
-        Fetch live market data and run ML + 5-layer analysis on all stocks.
-        Returns signals sorted by conviction.
+        Fetch live market data and score all stocks with the TRAINED autonomous
+        model suite (+ 5-layer FCS). Stocks without a trained-model signal are
+        skipped — no fabricated predictions.
         """
         from ..nepse_fetcher import fetch_all_stocks, fetch_market_overview
-        from ..ml_predictor import predictor as ml_predictor
         from ..engine import analyze_stock
         from ..predictions import detect_regime
         from ..models import StockData, HistoricalPrice, LayerWeights
+        from .service import get_research_platform
 
         try:
             weights = LayerWeights(fvl=0.22, tml=0.28, ssil=0.15, gtbil=0.15, mrlll=0.20)
@@ -330,13 +347,17 @@ class AutonomousTradingAgent:
             logger.warning("Regime detection unavailable: %s", exc)
             regime = None
 
-        # ML predictions for all stocks
+        # Trained-suite signals for all covered symbols
         try:
-            ml_preds = ml_predictor.predict(all_stocks, market_regime=getattr(regime, "regime", None))
-            ml_pred_map = {p["symbol"]: p for p in ml_preds}
+            platform = get_research_platform()
+            cards = platform.signal_cards(limit=1000)
+            card_map = {card.symbol.upper(): card for card in cards}
         except Exception as exc:
-            logger.warning("ML prediction failed: %s", exc)
-            ml_pred_map = {}
+            logger.error("Trained model signals unavailable: %s", exc)
+            return []
+        if not card_map:
+            logger.warning("The trained model has no signals yet; cannot scan the market.")
+            return []
 
         signals: list[AgentSignal] = []
 
@@ -346,17 +367,31 @@ class AutonomousTradingAgent:
             if not symbol or cmp <= 0:
                 continue
 
-            ml = ml_pred_map.get(symbol, {})
-            rise_prob = float(ml.get("riseProbability", 50.0))
-            action = ml.get("action", "HOLD")
-            confidence = ml.get("confidence", "LOW")
-            rr = float(ml.get("riskRewardRatio", 1.0))
-            stop_loss = float(ml.get("stopLoss", cmp * 0.95))
-            target_1 = float(ml.get("sellRangeLow", cmp * 1.05))
-            target_2 = float(ml.get("sellRangeHigh", cmp * 1.10))
-            ideal_entry = float(ml.get("idealEntry", cmp))
-            pred_change_pct = float(ml.get("predictedChangePercent", 0.0))
-            reasoning = ml.get("reasoning", "")
+            card = card_map.get(symbol.upper())
+            if card is None:
+                continue  # no trained-model signal for this symbol — skip, don't invent
+
+            votes = card.model_votes or []
+            if votes:
+                r7 = float(sum(v.predicted_return_7d for v in votes) / len(votes))
+                r30 = float(sum(v.predicted_return_30d for v in votes) / len(votes))
+            else:
+                r7 = r30 = float(card.expected_return_percent)
+
+            action = getattr(card.overall_signal, "value", str(card.overall_signal))
+            confidence_score = float(card.confidence_score)
+            confidence = "HIGH" if confidence_score >= 70 else "MEDIUM" if confidence_score >= 45 else "LOW"
+            rise_prob = self._rise_probability(action, confidence_score, r7)
+
+            support = float(card.technical.support or 0)
+            stop_loss = support if 0 < support < cmp else cmp * 0.95
+            target_1 = cmp * (1 + r7 / 100)
+            target_2 = cmp * (1 + r30 / 100)
+            downside = max(cmp - stop_loss, cmp * 0.005)
+            rr = max(0.0, (max(target_1, target_2) - cmp) / downside)
+            ideal_entry = cmp
+            pred_change_pct = r7
+            reasoning = " · ".join(list(card.top_reasons or [])[:3]) or f"Trained suite signal {action}."
 
             # 5-layer FCS score
             fcs_score = 50.0
@@ -415,7 +450,7 @@ class AutonomousTradingAgent:
                 target_1=target_1,
                 target_2=target_2,
                 fcs_score=fcs_score,
-                ml_vote=ml.get("modelScores", {}) and action or "HOLD",
+                ml_vote=action,
                 reasoning=reasoning,
                 kelly_size_pct=round(kelly_pct * 100, 2),
             ))

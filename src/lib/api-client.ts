@@ -76,6 +76,10 @@ export interface ApiMarket {
   t_bill_yield: number;
   source: ApiDataSource;
   timestamp?: string;
+  market_state?: string;
+  is_live?: boolean;
+  is_stale?: boolean;
+  as_of?: string;
 }
 
 export interface ApiMarketWarning {

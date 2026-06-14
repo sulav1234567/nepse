@@ -3,6 +3,7 @@ Authentication Service - JWT Token Management and Password Hashing
 """
 
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from jose import JWTError, jwt
@@ -14,7 +15,7 @@ from .database import UserManager
 logger = logging.getLogger("nepse-alpha")
 
 # Configuration
-SECRET_KEY = "cJlTdvfa89-D-Muf-drMJcQkRUqwB1NB48t4gBbozDc"  # Generated - change in production!
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "cJlTdvfa89-D-Muf-drMJcQkRUqwB1NB48t4gBbozDc")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 720  # 12 hours
 

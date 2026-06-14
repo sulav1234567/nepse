@@ -914,6 +914,15 @@ a:hover { color: var(--accent-secondary); }
   100% { background-position: -200% 0; }
 }
 
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* ─── Recharts Overrides ────────────────────────────────────────────────── */
 .recharts-default-tooltip {
   background: var(--bg-tertiary) !important;

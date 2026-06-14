@@ -37,6 +37,9 @@ logger = logging.getLogger("nepse.train_local")
 # ─── Data loading ─────────────────────────────────────────────────────────────
 
 MARKET_CSV_DIR = REPO_ROOT / "data" / "market" / "stocks"
+MACRO_DIR = REPO_ROOT / "data" / "macro"
+FUNDAMENTALS_CSV = REPO_ROOT / "data" / "fundamentals" / "sharesansar_quarterly_snapshots.csv"
+INDEX_CSV = REPO_ROOT / "data" / "market" / "indices" / "NEPSE_INDEX.csv"
 REQUIRED_COLS = {"date", "open", "high", "low", "close", "volume"}
 
 
@@ -75,17 +78,117 @@ def load_stock_csvs(max_stocks: int | None = None) -> dict[str, pd.DataFrame]:
     return frames
 
 
+# ─── Macro / fundamentals / index loaders ─────────────────────────────────────
+# These wire the SAME external data the live inference path uses into local
+# training, so the local model has the full ~250-feature schema instead of a
+# degraded price-only subset that would not match the served model.
+
+def load_macro_frames() -> dict[str, pd.DataFrame]:
+    """Load global/macro time-series as {SERIES_NAME: df[date, close]}."""
+    frames: dict[str, pd.DataFrame] = {}
+    if not MACRO_DIR.exists():
+        return frames
+    for csv_path in sorted(MACRO_DIR.glob("*.csv")):
+        try:
+            df = pd.read_csv(csv_path)
+            cols = {c.lower(): c for c in df.columns}
+            # Only time-series files (series_name,date,value); skip e.g. snapshots.
+            if "value" not in cols or "date" not in cols:
+                continue
+            out = pd.DataFrame({
+                "date": pd.to_datetime(df[cols["date"]], errors="coerce"),
+                "close": pd.to_numeric(df[cols["value"]], errors="coerce"),
+            }).dropna().sort_values("date").reset_index(drop=True)
+            if not out.empty:
+                frames[csv_path.stem.upper()] = out
+        except Exception as exc:
+            logger.warning("Macro load failed for %s: %s", csv_path.name, exc)
+    return frames
+
+
+def load_fundamentals() -> pd.DataFrame:
+    """Load the quarterly fundamentals snapshot (eps, roe, npl, casa_ratio, ...)."""
+    if not FUNDAMENTALS_CSV.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(FUNDAMENTALS_CSV)
+        df.columns = [c.lower().strip() for c in df.columns]
+        return df
+    except Exception as exc:
+        logger.warning("Fundamentals load failed: %s", exc)
+        return pd.DataFrame()
+
+
+def load_index_frame() -> pd.DataFrame:
+    """Load the NEPSE index frame used for beta/alpha and market-relative features."""
+    if not INDEX_CSV.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(INDEX_CSV)
+        df.columns = [c.lower().strip() for c in df.columns]
+        return df
+    except Exception as exc:
+        logger.warning("Index frame load failed: %s", exc)
+        return pd.DataFrame()
+
+
+def build_sector_frames(stock_frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Build a per-sector composite (mean close by date) as a sector-peer proxy."""
+    by_sector: dict[str, list[pd.DataFrame]] = {}
+    for df in stock_frames.values():
+        if "sector" not in df.columns or df.empty:
+            continue
+        sector = str(df["sector"].iloc[-1])
+        by_sector.setdefault(sector, []).append(df[["date", "close"]])
+    sector_frames: dict[str, pd.DataFrame] = {}
+    for sector, parts in by_sector.items():
+        combined = pd.concat(parts)
+        combined["date"] = pd.to_datetime(combined["date"], errors="coerce")
+        composite = (
+            combined.dropna(subset=["date"]).groupby("date", as_index=False)["close"].mean()
+            .sort_values("date").reset_index(drop=True)
+        )
+        if not composite.empty:
+            sector_frames[sector] = composite
+    return sector_frames
+
+
 # ─── Feature building bridge ──────────────────────────────────────────────────
 
-def build_features_for_symbol(symbol: str, df: pd.DataFrame) -> pd.DataFrame | None:
-    """Build the autonomous feature frame for one symbol."""
+def build_features_for_symbol(
+    symbol: str,
+    df: pd.DataFrame,
+    *,
+    fundamentals_all: pd.DataFrame | None = None,
+    macro_frames: dict[str, pd.DataFrame] | None = None,
+    index_frame: pd.DataFrame | None = None,
+    sector_frames: dict[str, pd.DataFrame] | None = None,
+) -> pd.DataFrame | None:
+    """Build the autonomous feature frame for one symbol (full external context)."""
     try:
         from backend.autonomous.features import build_feature_frame
 
         price_frame = df.copy()
         if "turnover" not in price_frame.columns:
             price_frame["turnover"] = price_frame["close"] * price_frame["volume"]
-        feature_frame = build_feature_frame(symbol, price_frame)
+
+        sector = str(df["sector"].iloc[-1]) if "sector" in df.columns else "Others"
+        fundamentals = pd.DataFrame()
+        if (
+            fundamentals_all is not None
+            and not fundamentals_all.empty
+            and "symbol" in fundamentals_all.columns
+        ):
+            fundamentals = fundamentals_all[fundamentals_all["symbol"] == symbol]
+
+        feature_frame = build_feature_frame(
+            symbol=symbol,
+            price_frame=price_frame,
+            fundamentals_frame=fundamentals if not fundamentals.empty else None,
+            sector_peer_frame=(sector_frames or {}).get(sector),
+            macro_frames=macro_frames or None,
+            market_frame=index_frame if (index_frame is not None and not index_frame.empty) else None,
+        )
         if feature_frame is not None and not feature_frame.empty:
             if "sector" not in feature_frame.columns:
                 sector = str(df["sector"].iloc[-1]) if "sector" in df.columns else "Others"
@@ -200,12 +303,29 @@ def run_training(max_stocks: int | None = None, no_torch: bool = False) -> None:
         logger.error("No stock data found. Make sure data/market/stocks/*.csv exist.")
         sys.exit(1)
 
+    # Load the same external context the live inference path uses so the local
+    # model is trained on the full feature schema (not a degraded price-only set).
+    macro_frames = load_macro_frames()
+    fundamentals_all = load_fundamentals()
+    index_frame = load_index_frame()
+    sector_frames = build_sector_frames(stock_frames)
+    logger.info(
+        "External context: %d macro series, %d fundamentals rows, %d sector composites, index=%s",
+        len(macro_frames), len(fundamentals_all), len(sector_frames), not index_frame.empty,
+    )
+
     logger.info("Building feature frames for %d symbols ...", len(stock_frames))
     t0 = time.time()
     symbol_feature_frames: dict[str, pd.DataFrame] = {}
     failed = 0
     for i, (sym, df) in enumerate(stock_frames.items(), 1):
-        ff = build_features_for_symbol(sym, df)
+        ff = build_features_for_symbol(
+            sym, df,
+            fundamentals_all=fundamentals_all,
+            macro_frames=macro_frames,
+            index_frame=index_frame,
+            sector_frames=sector_frames,
+        )
         if ff is not None and not ff.empty:
             symbol_feature_frames[sym] = ff
         else:

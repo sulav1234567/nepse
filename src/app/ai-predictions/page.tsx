@@ -13,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Brain, Cpu, Database, Target, TrendingUp, Zap } from 'lucide-react';
+import { Brain, Cpu, Database, Loader2, Target, TrendingUp, Zap } from 'lucide-react';
 
 import Sidebar from '@/components/Sidebar';
 import { ApiDataSource, fetchAIPredictions } from '@/lib/api-client';
@@ -38,7 +38,7 @@ type AIPrediction = {
   recommendationSummary: string;
   keyDrivers: { feature: string; value: number; direction: string; importance: number }[];
   reasoning: string;
-  modelScores: { randomForest: number; xgboost: number; mlpClassifier: number; gradientBoosting: number; mlpRegressor: number };
+  modelScores: Record<string, number>;
   buyRangeLow: number;
   buyRangeHigh: number;
   idealEntry: number;
@@ -178,6 +178,39 @@ export default function AIPredictionsPage() {
     { name: 'Watchlist', value: predictions.filter((prediction) => prediction.riseProbability >= 50 && prediction.riseProbability < 65).length },
     { name: 'Avoid', value: predictions.filter((prediction) => prediction.riseProbability < 50).length },
   ];
+
+  const isLoading = !data && !error;
+
+  if (isLoading) {
+    return (
+      <div className="app-layout">
+        <Sidebar />
+        <main className="main-content">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
+            <Brain size={32} color="var(--accent)" />
+            <h1 style={{ fontSize: '2rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+              AI Recommendation Engine
+            </h1>
+          </div>
+          <div className="glass-card" style={{ textAlign: 'center', padding: '4rem 2rem' }}>
+            <Loader2 size={44} color="var(--accent)" className="spin" style={{ marginBottom: '1.25rem' }} />
+            <h2 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
+              Loading live AI predictions…
+            </h2>
+            <p style={{ color: 'var(--text-secondary)', maxWidth: 480, margin: '0 auto' }}>
+              Fetching real-time NEPSE market data and running the trained model across all stocks.
+              This can take a few seconds — please wait, the page will update automatically.
+            </p>
+            <div style={{ display: 'grid', gap: 12, marginTop: 28, maxWidth: 620, marginInline: 'auto' }}>
+              {[0, 1, 2, 3].map((row) => (
+                <div key={row} className="loading-skeleton" style={{ height: 64, borderRadius: 12 }} />
+              ))}
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="app-layout">
@@ -408,7 +441,7 @@ export default function AIPredictionsPage() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem', marginBottom: '1rem' }}>
               {[
                 { label: 'EXIT TRIGGER', value: selected.exitTrigger, color: '#f97316' },
-                { label: 'MODEL STACK', value: `RF ${selected.modelScores.randomForest}% · XGB ${selected.modelScores.xgboost}% · MLP ${selected.modelScores.mlpClassifier}%`, color: '#818cf8' },
+                { label: 'MODEL STACK', value: Object.entries(selected.modelScores).slice(0, 3).map(([model, score]) => `${model.replace(/ (Model|Sequence Model|Transformer|Agent)$/i, '')} ${score}%`).join(' · ') || 'No model votes', color: '#818cf8' },
                 { label: 'EXPECTED P&L', value: `+Rs.${Math.round(selected.expectedProfitRs)} / -Rs.${Math.round(selected.expectedDownsideRs)}`, color: '#4ade80' },
               ].map((item) => (
                 <div key={item.label} style={{ padding: '0.85rem', background: 'rgba(255,255,255,0.02)', borderRadius: '0.75rem', border: '1px solid var(--glass-border)' }}>

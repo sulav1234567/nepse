@@ -173,6 +173,16 @@ export default function DashboardPage() {
                 ? `${(market?.nepse_change_percent ?? 0) >= 0 ? '▲' : '▼'} ${Math.abs(market?.nepse_change ?? 0).toFixed(2)} (${Math.abs(market?.nepse_change_percent ?? 0).toFixed(2)}%)`
                 : 'Waiting for verified index feed'}
             </div>
+            {hasVerifiedIndex ? (
+              <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 6 }}>
+                {market?.is_live
+                  ? '🟢 LIVE · market open'
+                  : market?.is_stale
+                    ? '🟠 Last known (live feed unreachable)'
+                    : '⚪ Market closed'}
+                {market?.as_of ? ` · as of ${market.as_of}` : ''}
+              </div>
+            ) : null}
           </div>
           <div className="stat-card">
             <div className="stat-label">Turnover</div>

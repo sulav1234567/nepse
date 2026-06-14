@@ -5,6 +5,7 @@ Fallback source: NEPSE official API
 """
 
 import httpx
+import json
 import time
 import logging
 import certifi
@@ -917,114 +918,185 @@ nepse_client = NepseClient()
 # REAL-TIME NEPSE INDEX FETCHER
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Persistent last-known-good index across cache-TTL expiry. We NEVER fabricate a
+# value (no 0.0 placeholder); if every live source is unreachable we surface this
+# last real value flagged as stale, or an explicit "unavailable" payload.
+_last_known_index: Optional[dict[str, Any]] = None
+
+
+def _parse_live_trading_index(html: str) -> Optional[dict[str, Any]]:
+    """Parse the main NEPSE index from the Sharesansar live-trading page.
+
+    This feed updates intraday (live during market hours) and shows the last close
+    when the market is closed. It also exposes the market status and an "As of"
+    timestamp, which we propagate so the UI can be honest about freshness.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    value: Optional[float] = None
+    change_pct: Optional[float] = None
+    for block in soup.select("div.mu-list"):
+        heading = block.find("h4")
+        if not heading or heading.get_text(strip=True).upper() != "NEPSE INDEX":
+            continue
+        value_span = block.select_one(".mu-value")
+        percent_span = block.select_one(".mu-percent")
+        if value_span is not None:
+            value = _parse_float(value_span.get_text())
+        if percent_span is not None:
+            change_pct = _parse_float(percent_span.get_text())
+        break
+
+    if value is None or not _is_plausible_nepse_index(value):
+        return None
+
+    page_text = soup.get_text(" ", strip=True)
+    if re.search(r"Market\s+Open", page_text, re.IGNORECASE):
+        market_state = "OPEN"
+    elif re.search(r"Market\s+Closed", page_text, re.IGNORECASE):
+        market_state = "CLOSED"
+    else:
+        market_state = "UNKNOWN"
+
+    as_of_match = re.search(r"As\s+of\s*:?\s*([0-9]{4}-[0-9]{2}-[0-9]{2}[ T0-9:]*)", page_text)
+    as_of = as_of_match.group(1).strip() if as_of_match else None
+
+    change_pct = change_pct or 0.0
+    # Derive the point change from the percent move (the feed only gives percent).
+    change_val = round(value - value / (1 + change_pct / 100.0), 2) if change_pct else 0.0
+
+    return {
+        "value": round(value, 2),
+        "change": change_val,
+        "change_percent": round(change_pct, 2),
+        "market_state": market_state,
+        "as_of": as_of,
+    }
+
+
 async def fetch_current_nepse_index() -> dict[str, Any]:
+    """Fetch the current NEPSE index value.
+
+    PRIMARY: Sharesansar live-trading feed — intraday-live during market hours.
+    FALLBACK: Sharesansar indices end-of-day AJAX — confirmed-accurate last close.
+    LAST RESORT: the persisted last-known value, flagged ``is_stale=True``.
+
+    Never returns a fabricated number: callers/UI can rely on ``is_stale`` /
+    ``market_state`` / ``as_of`` to show a loader or a "data unavailable" notice
+    instead of a fake 0.0.
     """
-    Fetch the CURRENT real-time NEPSE index value directly from Sharesansar AJAX.
-    This gets the latest index data with minimal latency.
-    """
+    global _last_known_index
+
+    # PRIMARY — intraday live feed
     try:
-        async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
-            # Fetch latest index data from Sharesansar AJAX endpoint (works reliably)
+        async with httpx.AsyncClient(verify=SHARESANSAR_SSL_VERIFY, follow_redirects=True) as client:
+            resp = await client.get(
+                "https://www.sharesansar.com/live-trading",
+                headers={
+                    "X-Requested-With": "XMLHttpRequest",
+                    "User-Agent": SHARESANSAR_HEADERS["User-Agent"],
+                    "Referer": "https://www.sharesansar.com/live-trading",
+                },
+                timeout=12.0,
+            )
+            if resp.status_code == 200:
+                live = _parse_live_trading_index(resp.text)
+                if live:
+                    result = {
+                        "nepse_index": live["value"],
+                        "nepse_change": live["change"],
+                        "nepse_change_percent": live["change_percent"],
+                        "market_state": live["market_state"],
+                        "is_live": live["market_state"] == "OPEN",
+                        "is_stale": False,
+                        "as_of": live["as_of"] or datetime.now().isoformat(),
+                        "source": "SHARESANSAR_LIVE_TRADING",
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    logger.info(
+                        f"✓ NEPSE Index (live-trading): {live['value']} "
+                        f"({live['change_percent']}%) · {live['market_state']} · as of {live['as_of']}"
+                    )
+                    cache.set("current_nepse_index", result, ttl_seconds=15)
+                    _last_known_index = result
+                    return result
+            else:
+                logger.warning(f"Live-trading page returned {resp.status_code}")
+    except Exception as e:
+        logger.debug(f"Live-trading index fetch failed: {e}")
+
+    # FALLBACK — accurate end-of-day AJAX (paged oldest-first; take the newest row)
+    try:
+        async with httpx.AsyncClient(verify=SHARESANSAR_SSL_VERIFY, follow_redirects=True) as client:
             to_date = datetime.now().strftime("%Y-%m-%d")
-            from_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-            
-            headers = {
-                "X-Requested-With": "XMLHttpRequest",
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "Referer": "https://www.sharesansar.com/indices-sub-indices",
-                "User-Agent": SHARESANSAR_HEADERS["User-Agent"],
-            }
-            params = {
-                "index_id": 12,  # NEPSE Index ID
-                "from": from_date,
-                "to": to_date,
-                "draw": 1,
-                "start": 0,
-                "length": 1,  # Just get the latest
-            }
-            
+            from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
             resp = await client.get(
                 "https://www.sharesansar.com/indices-sub-indices",
-                params=params,
-                headers=headers,
+                params={
+                    "index_id": 12,  # NEPSE Index ID
+                    "from": from_date,
+                    "to": to_date,
+                    "draw": 1,
+                    "start": 0,
+                    "length": 20,
+                },
+                headers={
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Referer": "https://www.sharesansar.com/indices-sub-indices",
+                    "User-Agent": SHARESANSAR_HEADERS["User-Agent"],
+                },
                 timeout=10.0,
             )
-            
             if resp.status_code == 200:
                 try:
                     payload = resp.json()
-                    if isinstance(payload, dict):
-                        rows = payload.get("data", [])
-                        if isinstance(rows, list) and rows:
-                            latest_row = rows[-1]  # Get latest
-                            
-                            current_idx = _parse_float(latest_row.get("current"))
-                            if _is_plausible_nepse_index(current_idx):
-                                change_val = _parse_float(latest_row.get("change_", 0))
-                                change_pct = _parse_float(latest_row.get("per_change", 0))
-                                
-                                logger.info(f"✓ Real-time NEPSE Index via AJAX: {current_idx} (Change: {change_val}, {change_pct}%)")
-                                cache.set("current_nepse_index", {
-                                    "nepse_index": round(current_idx, 2),
-                                    "nepse_change": round(change_val, 2),
-                                    "nepse_change_percent": round(change_pct, 2),
-                                    "source": "SHARESANSAR_REALTIME_AJAX",
-                                    "timestamp": datetime.now().isoformat(),
-                                }, ttl_seconds=15)
-                                
-                                return {
-                                    "nepse_index": round(current_idx, 2),
-                                    "nepse_change": round(change_val, 2),
-                                    "nepse_change_percent": round(change_pct, 2),
-                                    "source": "SHARESANSAR_REALTIME_AJAX",
-                                    "timestamp": datetime.now().isoformat(),
-                                }
+                    rows = payload.get("data", []) if isinstance(payload, dict) else []
+                    if isinstance(rows, list) and rows:
+                        rows = sorted(rows, key=lambda row: str(row.get("published_date", "")))
+                        latest_row = rows[-1]
+                        current_idx = _parse_float(latest_row.get("current"))
+                        if _is_plausible_nepse_index(current_idx):
+                            result = {
+                                "nepse_index": round(current_idx, 2),
+                                "nepse_change": round(_parse_float(latest_row.get("change_", 0)), 2),
+                                "nepse_change_percent": round(_parse_float(latest_row.get("per_change", 0)), 2),
+                                "market_state": "CLOSED",
+                                "is_live": False,
+                                "is_stale": False,
+                                "as_of": str(latest_row.get("published_date") or datetime.now().isoformat()),
+                                "source": "SHARESANSAR_EOD_AJAX",
+                                "timestamp": datetime.now().isoformat(),
+                            }
+                            logger.info(f"✓ NEPSE Index (EOD AJAX): {current_idx} as of {result['as_of']}")
+                            cache.set("current_nepse_index", result, ttl_seconds=15)
+                            _last_known_index = result
+                            return result
                 except json.JSONDecodeError as e:
-                    logger.debug(f"AJAX response is not JSON: {e}")
+                    logger.debug(f"EOD AJAX response is not JSON: {e}")
             else:
-                logger.warning(f"AJAX call returned {resp.status_code}")
-    
+                logger.warning(f"EOD AJAX call returned {resp.status_code}")
     except Exception as e:
-        logger.debug(f"Real-time AJAX fetch failed: {e}")
-    
-    # Fallback: Use cached value
-    cached = cache.get("current_nepse_index")
-    if cached:
-        logger.info("↻ Using cached NEPSE Index")
-        return cached
-    
-    # Last resort: Fetch from index history (should always have something)
-    try:
-        history_result = await fetch_nepse_index_history(days=1)
-        if history_result and history_result.get("history"):
-            history = history_result.get("history", [])
-            if history:
-                latest = history[-1]
-                index_val = latest.get("close", 0)
-                change_val = latest.get("change", 0)
-                change_pct = latest.get("change_percent", 0)
-                
-                if _is_plausible_nepse_index(index_val):
-                    logger.info(f"✓ NEPSE Index from history: {index_val}")
-                    result = {
-                        "nepse_index": round(index_val, 2),
-                        "nepse_change": round(change_val, 2),
-                        "nepse_change_percent": round(change_pct, 2),
-                        "source": "SHARESANSAR_HISTORY_FALLBACK",
-                        "timestamp": datetime.now().isoformat(),
-                    }
-                    cache.set("current_nepse_index", result, ttl_seconds=15)
-                    return result
-    except Exception as e:
-        logger.debug(f"History fallback failed: {e}")
-    
+        logger.debug(f"EOD AJAX index fetch failed: {e}")
+
+    # LAST RESORT — last real value we ever saw, clearly flagged as stale.
+    if _last_known_index is not None:
+        logger.info("↻ Serving last-known NEPSE Index (stale)")
+        stale = dict(_last_known_index)
+        stale.update({"is_stale": True, "is_live": False, "timestamp": datetime.now().isoformat()})
+        return stale
+
     return {
-        "nepse_index": 0.0,
-        "nepse_change": 0.0,
-        "nepse_change_percent": 0.0,
+        "nepse_index": None,
+        "nepse_change": None,
+        "nepse_change_percent": None,
+        "market_state": "UNKNOWN",
+        "is_live": False,
+        "is_stale": True,
+        "as_of": None,
         "source": "UNAVAILABLE",
         "timestamp": datetime.now().isoformat(),
-        "error": "Unable to fetch real-time NEPSE index"
+        "error": "Unable to fetch the NEPSE index from any live source right now.",
     }
 
 
@@ -1181,7 +1253,14 @@ async def fetch_market_overview() -> dict[str, Any]:
     # Get the LATEST real-time NEPSE index (bypass cache for truly real-time)
     index_data = await fetch_current_nepse_index()
     current_nepse_index = index_data.get("nepse_index", 0.0)
-    
+    index_freshness = {
+        "index_source": index_data.get("source"),
+        "market_state": index_data.get("market_state", "UNKNOWN"),
+        "is_live": index_data.get("is_live", False),
+        "is_stale": index_data.get("is_stale", False),
+        "as_of": index_data.get("as_of"),
+    }
+
     # Get market summary (volume, advancers/decliners, etc.)
     # FALLBACK 1: Sharesansar
     sharesansar_summary = await sharesansar_client.fetch_market_summary()
@@ -1196,6 +1275,7 @@ async def fetch_market_overview() -> dict[str, Any]:
             "advancers": sharesansar_summary.get("advancers", 0),
             "decliners": sharesansar_summary.get("decliners", 0),
             "unchanged": sharesansar_summary.get("unchanged", 0),
+            **index_freshness,
         }
         if _is_plausible_nepse_index(current_nepse_index):
             logger.info(f"✓ Market overview with real-time NEPSE index: {current_nepse_index}")
@@ -1220,6 +1300,7 @@ async def fetch_market_overview() -> dict[str, Any]:
             "advancers": merolagani_summary.get("advancers", 0),
             "decliners": merolagani_summary.get("decliners", 0),
             "unchanged": merolagani_summary.get("unchanged", 0),
+            **index_freshness,
         }
         if _is_plausible_nepse_index(current_nepse_index):
             logger.info(f"✓ Market overview from Merolagani with real-time index: {current_nepse_index}")
